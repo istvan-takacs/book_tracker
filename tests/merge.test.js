@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mergeBook, sameBook, bookKey, reconcileOverride } from '../js/lib/merge.js';
+import { fromOpenLibrarySearchDoc } from '../js/lib/normalize.js';
 
 const hc = {
     hardcoverId: 101, title: 'The Salt Courts', authors: [{ id: 7, name: 'Ines Vahl' }],
@@ -66,4 +67,17 @@ test('manual date reconciliation', () => {
     assert.equal(reconcileOverride(book, { releaseDate: '2027-04-15', datePrecision: 'day' }), 'clear');
     assert.equal(reconcileOverride(book, { releaseDate: '2027-05-01', datePrecision: 'day' }), 'ask');
     assert.equal(reconcileOverride(book, { releaseDate: '2027-01-01', datePrecision: 'year' }), 'keep');
+});
+
+test('Open Library search docs become books', () => {
+    const b = fromOpenLibrarySearchDoc({ key: '/works/OL16813053W', title: 'Words of Radiance', author_name: ['Brandon Sanderson'], first_publish_year: 2014, cover_i: 1, isbn: ['9786055069520', '9780765326362', 'junk'], number_of_pages_median: 1088 });
+    assert.equal(b.authors[0].name, 'Brandon Sanderson');
+    assert.equal(b.isbn13, '9780765326362');
+    assert.equal(b.datePrecision, 'year');
+    assert.equal(b.coverUrl, 'https://covers.openlibrary.org/b/id/1-M.jpg');
+    const m = mergeBook({ ol: b });
+    assert.equal(m.verified, false);
+    assert.equal(m.key, 'isbn_9780765326362');
+    assert.equal(bookKey({ openLibraryKey: '/works/OL1W' }), 'ol_OL1W');
+    assert.equal(fromOpenLibrarySearchDoc({ title: 'x' }), null);
 });

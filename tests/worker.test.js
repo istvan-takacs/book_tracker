@@ -1,6 +1,6 @@
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
-import { createHandler } from '../worker/src/index.js';
+import { createHandler, hardcoverAuthHeader } from '../worker/src/index.js';
 import { verifyIdToken } from '../worker/src/firebaseAuth.js';
 import { signJwt } from '../worker/src/jwt.js';
 import { validateVariables } from '../worker/src/queries.js';
@@ -152,4 +152,23 @@ test('calendar feed: unknown tokens 404, known tokens serve an ICS', async () =>
 
 test('Firestore value decoding', () => {
     assert.deepEqual(decodeFields({ a: { integerValue: '3' }, b: { mapValue: { fields: { c: { booleanValue: true } } } }, d: { nullValue: null } }), { a: 3, b: { c: true }, d: null });
+});
+
+test('Hardcover token paste mistakes are tolerated', () => {
+    for (const t of ['abc123', ' abc123\n', '"abc123"', "'abc123'", 'Bearer abc123', '"Bearer abc123"', 'bearer  abc123']) {
+        assert.equal(hardcoverAuthHeader(t), 'Bearer abc123', JSON.stringify(t));
+    }
+});
+
+test('Hardcover errors carry its reason, never the token', async () => {
+    const good = await token();
+    const hc = fakeHardcover(401, { error: 'invalid_token', error_description: 'Token expired' });
+    const res = await createHandler({ fetchImpl: hc.fetchImpl, getKeys: async () => keys, now: () => NOW })(post('searchBooks', good), env);
+    const body = await res.json();
+    assert.equal(res.status, 503);
+    assert.match(body.detail, /invalid_token · Token expired/);
+    assert.doesNotMatch(JSON.stringify(body), /hc-secret/);
+    const scope = fakeHardcover(403, { error: 'insufficient_scope', scope: 'books:read' });
+    const r2 = await (await createHandler({ fetchImpl: scope.fetchImpl, getKeys: async () => keys, now: () => NOW })(post('searchBooks', good), env)).json();
+    assert.match(r2.detail, /missing scope: books:read/);
 });

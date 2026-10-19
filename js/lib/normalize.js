@@ -159,6 +159,30 @@ export function fromOpenLibraryEdition(e, isbn) {
     };
 }
 
+/** An Open Library `/search.json` doc (a work). Used when Google Books search is down. */
+export function fromOpenLibrarySearchDoc(d) {
+    if (!d?.title || !d.key) return null;
+    // prefer English-language ISBNs (978-0 / 978-1) so later lookups find the edition you'd buy
+    const english = (i) => (/^978[01]/.test(i) ? 0 : 1);
+    const isbns = [...new Set(arr(d.isbn).map(toIsbn13).filter(Boolean))].sort((a, b) => english(a) - english(b));
+    const year = num(d.first_publish_year);
+    const series = arr(d.series_name)[0];
+    return {
+        openLibraryKey: str(d.key),
+        title: str(d.title),
+        subtitle: str(d.subtitle),
+        authors: arr(d.author_name).map((name) => ({ id: null, name })),
+        series: series ? { id: null, name: series, position: num(arr(d.series_position)[0]) } : null,
+        releaseDate: year ? `${year}-01-01` : null,
+        datePrecision: year ? 'year' : 'none',
+        isbn13: isbns[0] || null,
+        isbns: isbns.slice(0, 10),
+        coverUrl: d.cover_i ? `https://covers.openlibrary.org/b/id/${d.cover_i}-M.jpg` : null,
+        pageCount: num(d.number_of_pages_median),
+        readersCount: num(d.ratings_count),
+    };
+}
+
 /** Open Library publish_date is free text ("March 14, 2027", "2027"). */
 function fromGooglePublishedLoose(text) {
     if (!text) return { releaseDate: null, datePrecision: 'none' };

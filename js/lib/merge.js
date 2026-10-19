@@ -14,6 +14,7 @@ export function bookKey(meta) {
     if (meta?.hardcoverId) return `hc_${meta.hardcoverId}`;
     if (meta?.googleVolumeId) return `gb_${meta.googleVolumeId}`;
     if (meta?.isbn13) return `isbn_${meta.isbn13}`;
+    if (meta?.openLibraryKey) return `ol_${meta.openLibraryKey.split('/').pop()}`;
     return null;
 }
 

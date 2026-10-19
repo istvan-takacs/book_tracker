@@ -41,17 +41,20 @@ async function sha256Hex(s) {
     return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-function hardcoverAuthHeader(token) {
-    const t = String(token || '').trim();
-    return /^bearer\s/i.test(t) ? t : `Bearer ${t}`;
+/** Tolerate common paste mistakes: surrounding quotes, whitespace, a "Bearer " prefix. */
+export function hardcoverAuthHeader(token) {
+    const t = String(token || '').trim().replace(/^["']+|["']+$/g, '').trim().replace(/^bearer\s+/i, '').trim();
+    return `Bearer ${t}`;
 }
 
 /** Map Hardcover failures to responses the app can explain to the reader. */
 function hardcoverFailure(status, body) {
-    if (status === 401) return json({ error: 'hardcover_token', message: 'The Hardcover access token is missing, invalid or expired.' }, 503);
-    if (status === 429) return json({ error: 'rate_limited', message: 'Hardcover rate limit reached. Try again shortly.' }, 429);
-    if (status === 403) return json({ error: 'hardcover_forbidden', message: body?.error_description || body?.error || 'Hardcover refused the query.' }, 502);
-    return json({ error: 'hardcover_unavailable', message: `Hardcover responded with ${status}.` }, 502);
+    // Hardcover's own reason (never the token) helps tell an expired token from a missing scope.
+    const detail = [body?.error, body?.error_description, body?.scope && `missing scope: ${body.scope}`, body?.message].filter((x) => typeof x === 'string' && x).join(' · ').slice(0, 300) || null;
+    if (status === 401) return json({ error: 'hardcover_token', message: 'Hardcover rejected the access token (missing, invalid or expired).', detail, hardcoverStatus: status }, 503);
+    if (status === 429) return json({ error: 'rate_limited', message: 'Hardcover rate limit reached. Try again shortly.', detail, hardcoverStatus: status }, 429);
+    if (status === 403) return json({ error: 'hardcover_forbidden', message: 'Hardcover refused the query (often a missing token scope).', detail, hardcoverStatus: status }, 502);
+    return json({ error: 'hardcover_unavailable', message: `Hardcover responded with ${status}.`, detail, hardcoverStatus: status }, 502);
 }
 
 export function createHandler({ fetchImpl = (...a) => fetch(...a), cache = null, now = () => Date.now(), getKeys = null } = {}) {

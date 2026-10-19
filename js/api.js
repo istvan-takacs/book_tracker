@@ -4,7 +4,7 @@
 // the UI can explain why results are limited instead of showing nothing.
 
 import { workerUrl, googleBooksKey } from '../config.js';
-import { fromHardcoverHit, fromHardcoverBook, fromGoogleVolume, fromOpenLibraryEdition, authorFromHardcover } from './lib/normalize.js';
+import { fromHardcoverHit, fromHardcoverBook, fromGoogleVolume, fromOpenLibraryEdition, fromOpenLibrarySearchDoc, authorFromHardcover } from './lib/normalize.js';
 import { mergeBook, sameBook } from './lib/merge.js';
 import { toIsbn13, isbn13to10 } from './lib/isbn.js';
 
@@ -69,7 +69,9 @@ async function hc(op, variables, ttlMs = 30 * MIN) {
         }
         const body = await res.json().catch(() => ({}));
         if (!res.ok) {
-            if (body.error === 'hardcover_token') setHardcoverStatus('token', body.message);
+            const why = [body.message, body.detail && `Hardcover said: ${body.detail}`].filter(Boolean).join(' ');
+            if (body.error === 'hardcover_token') setHardcoverStatus('token', why);
+            else if (body.error === 'hardcover_forbidden') setHardcoverStatus('down', why);
             else if (res.status === 429) setHardcoverStatus('limited', body.message);
             else if (res.status === 401 || res.status === 403) setHardcoverStatus('signin', body.error);
             else setHardcoverStatus('down', body.message || `Error ${res.status}`);
@@ -122,6 +124,16 @@ export function googleVolume(id) {
     });
 }
 
+const OL_FIELDS = 'key,title,subtitle,author_name,first_publish_year,cover_i,isbn,number_of_pages_median,series_name,series_position,ratings_count';
+
+export function openLibrarySearch(q, n = 12) {
+    return cached(`ol:q:${q}:${n}`, 60 * MIN, async () => {
+        const res = await fetch(`https://openlibrary.org/search.json?${new URLSearchParams({ q, limit: String(n), fields: OL_FIELDS })}`);
+        if (!res.ok) throw new SourceError(`openlibrary_${res.status}`);
+        return ((await res.json()).docs || []).map(fromOpenLibrarySearchDoc).filter(Boolean);
+    });
+}
+
 export function openLibraryByIsbn(isbn) {
     return cached(`ol:isbn:${isbn}`, 24 * 60 * MIN, async () => {
         const res = await fetch(`https://openlibrary.org/isbn/${isbn}.json`);
@@ -165,10 +177,16 @@ export async function searchAll(q, { onPartial } = {}) {
             emit();
         }));
     }
-    tasks.push(googleSearch(q).then((list) => list, (e) => { result.google = e.code === 'google_429' ? 'quota' : 'error'; return null; }).then((list) => {
-        if (list) result.google = 'ok';
+    // Google Books first; if it is down or out of quota, Open Library search fills in.
+    tasks.push(googleSearch(q).then((list) => list, async (e) => {
+        result.google = e.code === 'google_429' ? 'quota' : 'error';
+        const ol = await openLibrarySearch(q).catch(() => null);
+        if (ol) result.openlibrary = 'ok';
+        return ol;
+    }).then((list) => {
+        if (list && result.google === 'pending') result.google = 'ok';
         for (const g of list || []) {
-            if (!result.books.some((b) => sameBook(b, g))) result.books.push({ ...mergeBook({ gb: g }), key: `gb_${g.googleVolumeId}` });
+            if (!result.books.some((b) => sameBook(b, g))) result.books.push(g.googleVolumeId ? { ...mergeBook({ gb: g }), key: `gb_${g.googleVolumeId}` } : mergeBook({ ol: g }));
         }
         emit();
     }));
@@ -190,6 +208,12 @@ export async function bookDetails(key, known = null) {
                 return mergeBook({ hc: hcBook, gb, ol });
             }
         } catch { /* fall through to what we know */ }
+    }
+    // Open Library / ISBN-keyed books: look up by ISBN (Hardcover first), keep the key
+    const isbn = key.startsWith('isbn_') ? key.slice(5) : key.startsWith('ol_') ? known?.isbn13 : null;
+    if (isbn) {
+        const found = await settle(lookupIsbn(isbn));
+        if (found) return { ...known, ...found, key };
     }
     if (key.startsWith('gb_')) {
         const gb = await settle(googleVolume(key.slice(3)));

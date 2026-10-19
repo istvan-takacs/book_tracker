@@ -96,7 +96,7 @@ export default {
             <section class="stack-sm"><h2 class="eyebrow">Book data sources</h2>
                 <div class="list">
                     <div class="list-row"><span aria-hidden="true" style="width:10px;height:10px;border-radius:5px;background:var(--${hcClass === 'muted' ? 'line' : hcClass})"></span>
-                        <span class="grow stack-sm" style="gap:2px"><span class="strong">Hardcover</span><span class="small ${hcClass}">${hcText}</span></span>
+                        <span class="grow stack-sm" style="gap:2px"><span class="strong">Hardcover</span><span class="small ${hcClass}">${hcText}</span>${sourceStatus.hardcoverMessage && hcClass === 'warn' ? html`<span class="small muted">${sourceStatus.hardcoverMessage}</span>` : ''}</span>
                         ${workerUrl ? html`<button type="button" class="btn btn-sm" data-action="recheck">Check</button>` : ''}</div>
                     <div class="list-row"><span aria-hidden="true" style="width:10px;height:10px;border-radius:5px;background:var(--sage)"></span>
                         <span class="grow stack-sm" style="gap:2px"><span class="strong">Google Books and Open Library</span><span class="small sage">Used to fill gaps</span></span></div>

@@ -2,7 +2,7 @@
 // next open) and book covers (cache-first). No notifications by design.
 // Bump VERSION when shipping changes to the shell.
 
-const VERSION = 'v1';
+const VERSION = 'v2';
 const SHELL = `bt-shell-${VERSION}`;
 const COVERS = 'bt-covers-v1';
 const MAX_COVERS = 400;

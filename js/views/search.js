@@ -98,12 +98,12 @@ function resultsHtml() {
                 <span class="grow stack-sm" style="gap:2px;min-width:0"><a class="line-title" href="${bookHref(b)}">${raw(highlight(b.title, q))}</a>
                     <span class="small muted">${authorLinks(b.authors)}${b.series?.name ? ` · ${seriesLabel(b.series)}` : ''}</span>
                     ${status ? html`<span class="small sage strong">${status}</span>` : future ? html`<span class="small accent strong">Out ${rel.label}</span>` : ''}
-                    ${!b.verified && !b.inLibrary ? html`<span class="small muted">From Google Books</span>` : ''}</span>
+                    ${!b.verified && !b.inLibrary ? html`<span class="small muted">From ${b.openLibraryKey ? 'Open Library' : 'Google Books'}</span>` : ''}</span>
                 ${status ? '' : html`<button type="button" class="btn btn-outline btn-sm" data-action="tbr" data-key="${b.key}">Add to TBR</button>`}</div>`;
         })}</div></section>` : '',
     };
     const order = results.lead === 'authors' ? ['authors', 'series', 'books'] : results.lead === 'series' ? ['series', 'books', 'authors'] : ['books', 'authors', 'series'];
-    const offlineSearch = q.trim().length >= 3 && !state.loading && state.remote && state.remote.hardcover !== 'ok' && state.remote.google !== 'ok';
+    const offlineSearch = q.trim().length >= 3 && !state.loading && state.remote && state.remote.hardcover !== 'ok' && state.remote.google !== 'ok' && state.remote.openlibrary !== 'ok';
     return html`
         ${hardcoverBanner(sourceStatus)}
         ${offlineSearch ? html`<div class="banner banner-warn" role="status"><span class="dot" aria-hidden="true"></span><span>${navigator.onLine === false ? 'You’re offline, so only your library was searched.'
