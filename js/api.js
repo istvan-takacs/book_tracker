@@ -94,11 +94,33 @@ export async function checkHardcover() {
 }
 
 // ─── Google Books / Open Library ────────────────────────────────────
+// Google Books search fails intermittently (503 backendFailed for identical
+// requests), so: retry once, and after repeated failures skip Google for a
+// while and let Open Library answer. This also keeps the console quiet.
+const googleBreaker = { failures: 0, until: 0 };
+const GOOGLE_COOLDOWN = 10 * MIN;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+export function googleCoolingDown() {
+    return Date.now() < googleBreaker.until;
+}
+
 async function gbFetch(path, params) {
+    if (googleCoolingDown()) throw new SourceError('google_cooldown');
     const p = new URLSearchParams(params);
     if (googleBooksKey) p.set('key', googleBooksKey);
-    const res = await fetch(`https://www.googleapis.com/books/v1/${path}?${p}`);
-    if (!res.ok) throw new SourceError(`google_${res.status}`);
+    const url = `https://www.googleapis.com/books/v1/${path}?${p}`;
+    let res = await fetch(url);
+    if (res.status === 503) { await sleep(350); res = await fetch(url); }
+    if (!res.ok) {
+        if (res.status === 503 || res.status === 429) {
+            googleBreaker.failures++;
+            // quota errors won't clear in minutes; 503s get two strikes
+            if (res.status === 429 || googleBreaker.failures >= 2) googleBreaker.until = Date.now() + GOOGLE_COOLDOWN;
+        }
+        throw new SourceError(`google_${res.status}`);
+    }
+    googleBreaker.failures = 0;
     return res.json();
 }
 
@@ -179,7 +201,7 @@ export async function searchAll(q, { onPartial } = {}) {
     }
     // Google Books first; if it is down or out of quota, Open Library search fills in.
     tasks.push(googleSearch(q).then((list) => list, async (e) => {
-        result.google = e.code === 'google_429' ? 'quota' : 'error';
+        result.google = e.code === 'google_429' ? 'quota' : e.code === 'google_cooldown' ? 'paused' : 'error';
         const ol = await openLibrarySearch(q).catch(() => null);
         if (ol) result.openlibrary = 'ok';
         return ol;
