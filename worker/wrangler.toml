@@ -1,0 +1,20 @@
+name = "book-tracker"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+workers_dev = true      # https://book-tracker.<you>.workers.dev
+preview_urls = false    # no extra preview hostnames
+
+[vars]
+# Fill these in before `wrangler deploy` (see README → Setup).
+FIREBASE_PROJECT_ID = "book-tracker-61650"
+# Comma-separated; include http://localhost:8000 for local development.
+ALLOWED_ORIGINS = "https://istvan-takacs.github.io,http://localhost:8000"
+# Used for links inside calendar events.
+APP_URL = "https://istvan-takacs.github.io/book_tracker/"
+
+# Secrets (never put these in this file):
+#   wrangler secret put HARDCOVER_TOKEN     # read-only Hardcover personal access token
+#   wrangler secret put ALLOWED_UIDS        # your Firebase user ID(s), comma-separated
+#   wrangler secret put FIREBASE_SA_EMAIL   # service account client_email (calendar feed)
+#   wrangler secret put FIREBASE_SA_KEY     # service account private_key (calendar feed)
+# For `wrangler dev`, put the same keys in worker/.dev.vars (gitignored).

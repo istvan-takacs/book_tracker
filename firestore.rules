@@ -1,0 +1,18 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Everything you own lives under your user ID; nobody else can read it.
+    match /users/{userId}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    // Private calendar-feed tokens. The app can create and delete its own;
+    // only the Worker (service account, bypasses rules) can read them.
+    match /calendarTokens/{token} {
+      allow create: if request.auth != null
+                    && request.resource.data.uid == request.auth.uid
+                    && token.size() >= 32;
+      allow delete: if request.auth != null && resource.data.uid == request.auth.uid;
+      allow read, update: if false;
+    }
+  }
+}

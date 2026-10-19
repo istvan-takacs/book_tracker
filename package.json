@@ -1,0 +1,11 @@
+{
+  "name": "book-tracker",
+  "private": true,
+  "type": "module",
+  "description": "Personal reading tracker and release radar (PWA). No build step; this file only enables ES modules for node --test.",
+  "scripts": {
+    "test": "node --test \"tests/**/*.test.js\"",
+    "serve": "python3 -m http.server 8000"
+  },
+  "engines": { "node": ">=20" }
+}
