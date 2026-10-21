@@ -5,7 +5,7 @@ import { store, firestoreBackend, previewBackend } from './store.js';
 import { services } from './services.js';
 import { setIdTokenProvider, onSourceStatus } from './api.js';
 import { checkReleases } from './releases.js';
-import { closeSheet, toast } from './ui.js';
+import { closeSheet, toast, morph } from './ui.js';
 import home from './views/home.js';
 import library from './views/library.js';
 import search from './views/search.js';
@@ -54,7 +54,10 @@ let current = null;
 
 function paint(route, { keepScroll = false } = {}) {
     const y = window.scrollY;
-    root.innerHTML = route.view.render(route).toString();
+    // a new screen starts fresh; updates to the same screen are applied in
+    // place so covers, focus and scroll position don't jump
+    if (keepScroll) morph(root, route.view.render(route));
+    else root.innerHTML = route.view.render(route).toString();
     root.classList.toggle('immersive', !!route.view.immersive);
     tabs.hidden = !!route.view.hideTabs;
     tabs.querySelectorAll('a[data-tab]').forEach((a) => {

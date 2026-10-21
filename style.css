@@ -167,7 +167,8 @@ p { margin: 0; }
 
 /* ─── Covers ─────────────────────────────────────────────── */
 .cover { position: relative; display: block; flex: 0 0 auto; border-radius: 4px; overflow: hidden; background: var(--cover-bg, #2f5d62); color: var(--cover-ink); box-shadow: var(--shadow); aspect-ratio: 2 / 3; }
-.cover img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 1; }
+.cover img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 1; opacity: 0; transition: opacity .2s ease; }
+.cover img.ready { opacity: 1; }
 .cover-text { position: absolute; inset: 0; padding: 8% 9%; display: flex; flex-direction: column; justify-content: space-between; }
 .cover-title { font-family: var(--display); line-height: 1.1; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; }
 .cover-author { font-size: .62em; letter-spacing: .1em; text-transform: uppercase; opacity: .9; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
@@ -250,7 +251,10 @@ mark { background: var(--accent-soft); color: var(--accent); border-radius: 3px;
 .sheet-host.show .sheet-backdrop { opacity: 1; }
 .sheet-handle { align-self: center; width: 64px; height: 24px; margin-top: 4px; border: 0; background: transparent; position: relative; flex: 0 0 auto; touch-action: none; }
 .sheet-handle::before { content: ''; position: absolute; left: 12px; right: 12px; top: 9px; height: 5px; border-radius: 3px; background: var(--line); }
-.sheet-body { overflow-y: auto; padding: 4px 20px calc(var(--safe-bottom) + 28px); display: flex; flex-direction: column; gap: 20px; overscroll-behavior: contain; }
+.sheet-body { flex: 1 1 auto; min-height: 0; -webkit-overflow-scrolling: touch; overflow-y: auto; padding: 4px 20px calc(var(--safe-bottom) + 28px); display: flex; flex-direction: column; gap: 20px; overscroll-behavior: contain; }
+/* Sheet contents keep their natural height so the sheet scrolls; otherwise
+   flexbox squashes a long list (which clips via overflow: hidden) to fit. */
+.sheet-body > * { flex-shrink: 0; }
 @media (min-width: 900px) {
     .sheet { left: auto; top: 0; width: 440px; max-height: none; border-radius: 0; transform: translateX(100%); }
     .sheet-handle { display: none; }
@@ -280,8 +284,26 @@ input[type="range"] { width: 100%; height: 44px; accent-color: var(--accent); }
    opens, so lift the search bar, sheets and toasts above it. */
 :root { --kb: 0px; }
 body.kb-open .tabs { display: none; }
-body.kb-open .searchbar { bottom: var(--kb); padding-bottom: 8px; }
-body.kb-open .search-view { padding-bottom: calc(var(--kb) + 100px); }
 body.kb-open .sheet { bottom: var(--kb); max-height: calc(100dvh - var(--kb) - var(--safe-top) - 12px); }
 body.kb-open .sheet-body { padding-bottom: 16px; }
 body.kb-open .toast { bottom: calc(var(--kb) + 12px); }
+
+/* ─── Search while typing (phones) ───────────────────────────
+   Pinning a bottom bar above the iOS keyboard means chasing a moving
+   target: iOS pans the page while you type and scroll, so the bar jumps
+   and can slip behind the keyboard. While the field is focused it docks at
+   the top instead, where the keyboard can never cover it, and the results
+   scroll underneath. Not typing: back at the bottom, in thumb reach. */
+@media (max-width: 899px) {
+    body.search-typing .tabs { display: none; }
+    body.search-typing .searchbar {
+        top: 0; bottom: auto;
+        padding: calc(var(--safe-top) + 8px) 16px 10px;
+        box-shadow: 0 6px 16px rgba(0, 0, 0, .18);
+    }
+    body.search-typing .search-view { padding-top: calc(var(--safe-top) + 64px); padding-bottom: calc(var(--kb) + 32px); }
+    body.search-typing .search-view > h1 { display: none; }
+}
+@media (prefers-reduced-motion: no-preference) {
+    .searchbar { transition: padding .15s ease; }
+}

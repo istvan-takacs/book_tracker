@@ -1,4 +1,4 @@
-import { html, icon, cover, authorLinks, seriesLabel, fmtNumber, toast } from '../ui.js';
+import { html, icon, cover, authorLinks, seriesLabel, fmtNumber, toast, morph } from '../ui.js';
 import { store } from '../store.js';
 import { lookupIsbn } from '../api.js';
 import { startScanner, queue } from '../scanner.js';
@@ -134,7 +134,7 @@ export default {
         const panelEl = root.querySelector('[data-panel]');
         paint = () => {
             if (!panelEl.isConnected) return;
-            panelEl.innerHTML = panel().toString();
+            morph(panelEl, panel());
             root.querySelector('[data-count]').textContent = `${s.count} scanned this visit`;
             root.querySelector('[data-hint]').textContent = { starting: 'Starting the camera…', scanning: 'Point your camera at the barcode on the back cover', looking: 'Barcode read', found: 'Book found', notfound: 'No match for that barcode', queued: 'Saved for later', error: '' }[s.mode];
             root.querySelector('[data-frame]').style.setProperty('--frame', s.mode === 'found' ? '#8cc497' : s.mode === 'notfound' ? '#f0b86a' : '#eef0f6');

@@ -2,7 +2,7 @@
 // Save); format, feel, moods and review sit behind "Add details", which
 // remembers whether it was left open.
 
-import { html, openSheet, raw } from '../ui.js';
+import { html, openSheet, raw, morph } from '../ui.js';
 import { store } from '../store.js';
 import { finishBook, saveMoodsVocabulary, metaOf } from '../actions.js';
 import { followDefault, followHint } from '../lib/follow.js';
@@ -130,7 +130,7 @@ export function openRateSheet(book, { readIndex = null } = {}) {
         mount(el, close) {
             const rerender = () => {
                 const top = el.scrollTop;
-                el.innerHTML = render().toString();
+                morph(el, render());
                 el.scrollTop = top;
                 el.querySelector('[data-new-mood]')?.focus();
             };

@@ -53,6 +53,21 @@ export function icon(name, size = 22, label = null) {
     return raw(`<svg class="icon" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" ${a11y}>${PATHS[name] || ''}</svg>`);
 }
 
+/**
+ * Cover URLs that have loaded at least once. Covers fade in the first time;
+ * after that they render already visible, so re-renders never blink.
+ */
+export const loadedCovers = new Set();
+if (typeof document !== 'undefined') {
+    document.addEventListener('load', (e) => {
+        const img = e.target;
+        if (img?.tagName === 'IMG' && img.parentElement?.classList.contains('cover')) {
+            img.classList.add('ready');
+            loadedCovers.add(img.getAttribute('src'));
+        }
+    }, true);
+}
+
 const COVER_COLOURS = ['#2f5d62', '#6b3e5e', '#3d5a80', '#7a3b2e', '#4a3f6b', '#26303f', '#1f4e5f', '#556b3a', '#2e4a3a', '#7a5c24', '#2c4d6b', '#8a4b3a'];
 function hash(s) { let h = 0; for (const c of s || '') h = (h * 31 + c.charCodeAt(0)) | 0; return Math.abs(h); }
 
@@ -63,7 +78,8 @@ export function cover(book, { size = 'md', label = true } = {}) {
     const bg = COVER_COLOURS[hash(title + author) % COVER_COLOURS.length];
     const alt = label ? `Cover of ${title}` : '';
     if (book?.coverUrl) {
-        return html`<span class="cover cover-${size}" style="--cover-bg:${bg}"><img src="${book.coverUrl}" alt="${alt}" loading="lazy" decoding="async" referrerpolicy="no-referrer" onerror="this.remove()"><span class="cover-text" aria-hidden="true"><span class="cover-title">${title}</span><span class="cover-author">${author}</span></span></span>`;
+        const ready = loadedCovers.has(book.coverUrl) ? ' class="ready"' : '';
+        return html`<span class="cover cover-${size}" style="--cover-bg:${bg}"><img src="${book.coverUrl}" alt="${alt}"${raw(ready)} loading="lazy" decoding="async" referrerpolicy="no-referrer" onerror="this.remove()"><span class="cover-text" aria-hidden="true"><span class="cover-title">${title}</span><span class="cover-author">${author}</span></span></span>`;
     }
     return html`<span class="cover cover-${size}" style="--cover-bg:${bg}" ${raw(label ? `role="img" aria-label="${esc(alt)}"` : 'aria-hidden="true"')}><span class="cover-text"><span class="cover-title">${title}</span><span class="cover-author">${author}</span></span></span>`;
 }
@@ -188,4 +204,71 @@ export function plural(n, one, many = one + 's') {
 
 export function fmtNumber(n) {
     return n == null ? '' : Number(n).toLocaleString('en-GB');
+}
+
+// ─── Updating the page in place ──────────────────────────────────────
+// Re-rendering by replacing innerHTML recreates every element, so cover
+// images blink, focus and scroll jump. morph() applies only the differences
+// to the existing DOM: unchanged images, inputs and text stay untouched.
+
+function sameNode(a, b) {
+    if (a.nodeType !== b.nodeType) return false;
+    if (a.nodeType !== 1) return true;
+    return a.tagName === b.tagName && (a.tagName !== 'IMG' || a.getAttribute('src') === b.getAttribute('src'));
+}
+
+function patchAttributes(from, to) {
+    for (const { name } of [...from.attributes]) {
+        if (!to.hasAttribute(name)) {
+            // a loaded cover keeps its "ready" class
+            if (from.tagName === 'IMG' && name === 'class' && from.classList.contains('ready')) continue;
+            from.removeAttribute(name);
+        }
+    }
+    for (const { name, value } of [...to.attributes]) {
+        if (from.getAttribute(name) === value) continue;
+        if (from.tagName === 'IMG' && name === 'class' && from.classList.contains('ready')) { from.setAttribute(name, value); from.classList.add('ready'); continue; }
+        from.setAttribute(name, value);
+    }
+}
+
+function patchFormValue(from, to) {
+    if (document.activeElement === from) return; // never fight the reader's typing
+    if (from.tagName === 'INPUT') {
+        if (from.type === 'checkbox' || from.type === 'radio') from.checked = to.hasAttribute('checked');
+        else if (from.value !== (to.getAttribute('value') ?? '')) from.value = to.getAttribute('value') ?? '';
+    } else if (from.tagName === 'TEXTAREA') {
+        if (from.value !== to.value) from.value = to.value;
+    } else if (from.tagName === 'SELECT') {
+        const i = [...to.options].findIndex((o) => o.hasAttribute('selected'));
+        if (i >= 0 && from.selectedIndex !== i) from.selectedIndex = i;
+    }
+}
+
+function patchChildren(from, to) {
+    const next = [...to.childNodes];
+    let i = 0;
+    for (; i < next.length; i++) {
+        const want = next[i];
+        const have = from.childNodes[i];
+        if (!have) { from.appendChild(want); continue; }
+        if (!sameNode(have, want)) { from.replaceChild(want, have); continue; }
+        if (have.nodeType !== 1) {
+            if (have.nodeValue !== want.nodeValue) have.nodeValue = want.nodeValue;
+            continue;
+        }
+        patchAttributes(have, want);
+        if (have.tagName === 'IMG') continue;
+        if (have.tagName === 'TEXTAREA') { patchFormValue(have, want); continue; }
+        if (have.tagName !== 'INPUT') patchChildren(have, want);
+        if (/^(INPUT|SELECT)$/.test(have.tagName)) patchFormValue(have, want);
+    }
+    while (from.childNodes.length > next.length) from.removeChild(from.lastChild);
+}
+
+/** Make `el`'s contents match `markup` while keeping unchanged nodes. */
+export function morph(el, markup) {
+    const tpl = document.createElement('template');
+    tpl.innerHTML = String(markup);
+    patchChildren(el, tpl.content);
 }

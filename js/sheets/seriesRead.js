@@ -2,7 +2,7 @@
 // books, give one rating (or none), say roughly when, then fine-tune each
 // book's rating on the next step.
 
-import { html, openSheet, raw, cover } from '../ui.js';
+import { html, openSheet, raw, cover, morph } from '../ui.js';
 import { store } from '../store.js';
 import { markSeriesRead, rateBookQuick } from '../actions.js';
 import { followDefault } from '../lib/follow.js';
@@ -123,7 +123,7 @@ export function openSeriesReadSheet(series, books) {
         mount(el, close) {
             const rerender = () => {
                 const top = el.scrollTop;
-                el.innerHTML = (state.step === 'adjust' ? adjustStep() : pickStep()).toString();
+                morph(el, state.step === 'adjust' ? adjustStep() : pickStep());
                 el.scrollTop = top;
             };
             el.addEventListener('change', (e) => {

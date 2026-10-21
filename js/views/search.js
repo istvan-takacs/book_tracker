@@ -1,4 +1,4 @@
-import { html, icon, cover, authorLinks, seriesLabel, esc, raw, plural } from '../ui.js';
+import { html, icon, cover, authorLinks, seriesLabel, esc, raw, plural, morph } from '../ui.js';
 import { store } from '../store.js';
 import { searchAll, sourceStatus } from '../api.js';
 import { rankResults } from '../lib/search.js';
@@ -182,7 +182,7 @@ export default {
     mount(root, { query }) {
         const resultsEl = root.querySelector('[data-results]');
         const input = root.querySelector('[data-input]');
-        paintResults = () => { if (resultsEl.isConnected) resultsEl.innerHTML = resultsHtml().toString(); };
+        paintResults = () => { if (resultsEl.isConnected) morph(resultsEl, resultsHtml()); };
         const initial = query.get('q');
         if (initial && initial !== state.q) { input.value = initial; run(initial); } else { state.results ? paintResults() : run(state.q); }
         input.addEventListener('input', () => {
@@ -193,11 +193,21 @@ export default {
             runLocal(v);
             if (v.trim().length >= 3) timer = setTimeout(() => run(v), REMOTE_DELAY);
         });
-        input.addEventListener('focus', () => setTimeout(() => input.scrollIntoView({ block: 'nearest' }), 320));
+        // While typing, dock the field at the top (see style.css "Search while typing").
+        let leaveTimer = null;
+        input.addEventListener('focus', () => {
+            clearTimeout(leaveTimer);
+            document.body.classList.add('search-typing');
+            window.scrollTo(0, 0);
+        });
+        input.addEventListener('blur', () => {
+            // wait a moment so a tapped result doesn't move under your finger
+            leaveTimer = setTimeout(() => { if (document.activeElement !== input) document.body.classList.remove('search-typing'); }, 400);
+        });
         root.querySelector('[data-searchform]').addEventListener('submit', (e) => { e.preventDefault(); clearTimeout(timer); run(input.value); input.blur(); });
         if (!state.q && matchMedia('(min-width: 900px)').matches) input.focus();
         const unsub = store.subscribe(() => paintResults());
-        return () => { unsub(); paintResults = () => {}; };
+        return () => { unsub(); paintResults = () => {}; clearTimeout(leaveTimer); document.body.classList.remove('search-typing'); };
     },
     handlers: {
         filter(el) {
