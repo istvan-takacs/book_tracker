@@ -110,7 +110,8 @@ export default {
             ${[...seriesGroups.entries()].map(([sname, list]) => {
                 list.sort((a, b) => a.series.position - b.series.position);
                 const readCount = list.filter((b) => store.get('books', b.key)?.status === 'read').length;
-                return html`<section class="stack-sm"><div class="row-between"><h2 class="eyebrow">${sname}</h2><span class="small sage strong">Read ${readCount} of ${list.length}</span></div>
+                const sid = list.find((b) => b.series?.id)?.series.id;
+                return html`<section class="stack-sm"><div class="row-between"><h2 class="eyebrow">${sname}</h2><a class="btn-link small" href="${sid ? `#/series/hc_${sid}` : `#/series/name/${encodeURIComponent(sname)}`}">Read ${readCount} of ${list.length} · See series</a></div>
                 <div class="list">${list.map((b) => {
                     const lib = store.get('books', b.key);
                     const r = releaseInfo(lib || b);

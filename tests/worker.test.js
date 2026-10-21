@@ -172,3 +172,41 @@ test('Hardcover errors carry its reason, never the token', async () => {
     const r2 = await (await createHandler({ fetchImpl: scope.fetchImpl, getKeys: async () => keys, now: () => NOW })(post('searchBooks', good), env)).json();
     assert.match(r2.detail, /missing scope: books:read/);
 });
+
+test('Hardcover RateLimit is forwarded so the app can pace itself', async () => {
+    const good = await token();
+    const fetchImpl = async () => new Response(JSON.stringify({ data: { ok: 1 } }), { status: 200, headers: { 'content-type': 'application/json', ratelimit: '"Free";r=7;t=0, "daily";r=4000;t=100' } });
+    const res = await createHandler({ fetchImpl, getKeys: async () => keys, now: () => NOW })(post('searchBooks', good), env);
+    assert.equal(res.headers.get('x-hc-remaining'), '7');
+    assert.match(res.headers.get('access-control-expose-headers'), /x-hc-remaining/);
+});
+
+test('stale cache is served when Hardcover rate-limits, fresh within the TTL', async () => {
+    const good = await token();
+    let t = NOW;
+    let mode = 'ok';
+    const calls = [];
+    const fetchImpl = async (url) => {
+        calls.push(url);
+        if (mode === 'ok') return new Response(JSON.stringify({ data: { v: 'first' } }), { status: 200, headers: { 'content-type': 'application/json' } });
+        return new Response(JSON.stringify({ error: 'Too Many Requests' }), { status: 429, headers: { 'content-type': 'application/json', 'retry-after': '12' } });
+    };
+    const cache = memoryCache();
+    const handle = createHandler({ fetchImpl, getKeys: async () => keys, now: () => t, cache });
+    assert.equal((await handle(post('searchBooks', good), env)).headers.get('x-cache'), 'miss');
+    t += 60 * 1000;
+    assert.equal((await handle(post('searchBooks', good), env)).headers.get('x-cache'), 'hit', 'within 6 h TTL');
+    t += 7 * 3600 * 1000; // past the TTL
+    mode = '429';
+    const later = Math.floor(t / 1000);
+    const fresh = await token({ iat: later - 60, exp: later + 3000, auth_time: later - 60 });
+    const res = await handle(post('searchBooks', fresh, undefined), env);
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('x-cache'), 'stale');
+    assert.equal(res.headers.get('retry-after'), '12');
+    assert.deepEqual((await res.json()).data, { v: 'first' });
+    // nothing cached for these variables: the 429 is passed on
+    const miss = await handle(post('searchBooks', fresh, { q: 'other', n: 5 }), env);
+    assert.equal(miss.status, 429);
+    assert.equal(miss.headers.get('retry-after'), '12');
+});

@@ -85,9 +85,10 @@ function resultsHtml() {
         })}</div></section>` : '',
         series: show('series') && series.length ? html`<section class="stack-sm"><h2 class="eyebrow">Series</h2><div class="list">${series.map((s) => {
             const followed = [...store.series.values()].some((x) => x.followed && normalize(x.name) === normalize(s.name));
-            return html`<button type="button" class="list-row list-row-btn" data-action="series" data-name="${s.name}">
+            const href = s.id ? `#/series/hc_${s.id}` : `#/series/name/${encodeURIComponent(s.name)}`;
+            return html`<a class="list-row" href="${href}">
                 <span class="grow stack-sm" style="gap:2px"><span class="line-title">${raw(highlight(s.name, q))}</span><span class="small muted" style="font-weight:500">${[s.authorName, s.booksCount ? plural(s.booksCount, 'book') : null].filter(Boolean).join(' · ')}</span></span>
-                ${followed ? html`<span class="badge badge-new">FOLLOWING</span>` : html`<span class="small accent">See books</span>`}</button>`;
+                ${followed ? html`<span class="badge badge-new">FOLLOWING</span>` : html`<span class="small accent">See series</span>`}</a>`;
         })}</div></section>` : '',
         books: show('books') && books.length ? html`<section class="stack-sm"><h2 class="eyebrow">Books</h2><div class="list">${books.map((b) => {
             metaByKey.set(b.key, b);
@@ -118,6 +119,17 @@ function resultsHtml() {
 
 let timer = null;
 let paintResults = () => {};
+const REMOTE_DELAY = 450; // ms after typing stops before asking Hardcover
+
+/** Instant results from your library while typing; no network. */
+function runLocal(q) {
+    state.gen++;
+    state.q = q;
+    state.correction = null;
+    state.results = q.trim() ? rankResults(q, libraryCandidates(), context()) : null;
+    state.loading = q.trim().length >= 3;
+    paintResults();
+}
 
 async function run(q, { exact = false } = {}) {
     const gen = ++state.gen;
@@ -132,13 +144,14 @@ async function run(q, { exact = false } = {}) {
     state.loading = true;
     paintResults();
     const onPartial = (remote) => { if (gen === state.gen) { state.results = rankResults(q, combine(local, remote), ctx); paintResults(); } };
-    const remote = await searchAll(q.trim(), { onPartial }).catch(() => null);
+    const include = { authors: state.filter === 'authors', series: state.filter === 'series' };
+    const remote = await searchAll(q.trim(), { onPartial, include }).catch(() => null);
     if (gen !== state.gen) return;
     state.remote = remote;
     let ranked = rankResults(q, combine(local, remote), ctx);
     const top = Math.max(ranked.books[0]?._score ?? 0, ranked.authors[0]?._score ?? 0, ranked.series[0]?._score ?? 0);
     if (!exact && ranked.correction && top < 0.75) {
-        const fixed = await searchAll(ranked.correction).catch(() => null);
+        const fixed = await searchAll(ranked.correction, { include }).catch(() => null);
         if (gen !== state.gen) return;
         const fixedRanked = rankResults(ranked.correction, combine(local, fixed), ctx);
         const fixedTop = Math.max(fixedRanked.books[0]?._score ?? 0, fixedRanked.authors[0]?._score ?? 0, fixedRanked.series[0]?._score ?? 0);
@@ -177,20 +190,28 @@ export default {
             const v = input.value;
             const clear = root.querySelector('[data-action="clear"]');
             if (!v && clear) clear.remove();
-            timer = setTimeout(() => run(v), v.trim().length < 3 ? 80 : 300);
+            runLocal(v);
+            if (v.trim().length >= 3) timer = setTimeout(() => run(v), REMOTE_DELAY);
         });
+        input.addEventListener('focus', () => setTimeout(() => input.scrollIntoView({ block: 'nearest' }), 320));
         root.querySelector('[data-searchform]').addEventListener('submit', (e) => { e.preventDefault(); clearTimeout(timer); run(input.value); input.blur(); });
         if (!state.q && matchMedia('(min-width: 900px)').matches) input.focus();
         const unsub = store.subscribe(() => paintResults());
         return () => { unsub(); paintResults = () => {}; };
     },
     handlers: {
-        filter(el) { state.filter = el.dataset.v; document.querySelectorAll('[data-action="filter"]').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.v === state.filter))); paintResults(); },
+        filter(el) {
+            const was = state.filter;
+            state.filter = el.dataset.v;
+            document.querySelectorAll('[data-action="filter"]').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.v === state.filter)));
+            // Authors/Series ask Hardcover for dedicated results (one request); other chips just re-filter
+            if (['authors', 'series'].includes(state.filter) && state.filter !== was && state.q.trim().length >= 3) run(state.q);
+            else paintResults();
+        },
         clear() { const i = document.querySelector('[data-input]'); i.value = ''; run(''); i.focus(); },
         recent(el) { const i = document.querySelector('[data-input]'); i.value = el.dataset.q; run(el.dataset.q); },
         clearRecent() { try { localStorage.removeItem(RECENT_KEY); } catch { /* blocked */ } paintResults(); },
         exact() { run(state.original, { exact: true }); },
-        series(el) { const i = document.querySelector('[data-input]'); i.value = el.dataset.name; state.filter = 'books'; document.querySelectorAll('[data-action="filter"]').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.v === 'books'))); run(el.dataset.name, { exact: true }); },
         tbr(el) { const m = metaByKey.get(el.dataset.key); if (m) setShelf(m, 'want'); },
         manual() { openAddBookSheet({ title: state.q.trim() }); },
     },

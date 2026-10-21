@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { rankResults, seriesPositionHint, collapseEditions } from '../js/lib/search.js';
+import { rankResults, seriesPositionHint, collapseEditions, deriveAuthorsAndSeries } from '../js/lib/search.js';
 import { matchField, correctQuery } from '../js/lib/text.js';
 
 const sanderson = { name: 'Brandon Sanderson', booksCount: 120 };
@@ -100,4 +100,19 @@ test('personal boosts never rescue an unrelated book', () => {
     const lib = [b('mine', 'A Crown of Brine', 'Ines Vahl', 'The Salt Courts', 2, 10)];
     const r = rankResults('the way of kings', { books: lib, authors: [], series: [] }, { libraryKeys: new Set(['mine']), followedAuthors: new Set(['ines vahl']) });
     assert.equal(r.books.length, 0);
+});
+
+test('author and series cards are derived from book hits (one request instead of three)', () => {
+    const hits = [
+        { key: 'hc_1', title: 'The Way of Kings', authors: [{ id: 7, name: 'Brandon Sanderson' }], series: { id: 2, name: 'The Stormlight Archive', position: 1, total: 5 }, readersCount: 500 },
+        { key: 'hc_2', title: 'Words of Radiance', authors: [{ id: 7, name: 'Brandon Sanderson' }], series: { id: 2, name: 'The Stormlight Archive', position: 2 }, readersCount: 400 },
+        { key: 'hc_3', title: 'The Blade Itself', authors: [{ id: 9, name: 'Joe Abercrombie' }], series: { id: 3, name: 'The First Law', position: 1 }, readersCount: 100 },
+    ];
+    const { authors, series } = deriveAuthorsAndSeries(hits);
+    assert.deepEqual(authors.map((a) => [a.hardcoverId, a.name, a.booksCount]), [[7, 'Brandon Sanderson', 2], [9, 'Joe Abercrombie', 1]]);
+    assert.equal(series[0].name, 'The Stormlight Archive');
+    assert.equal(series[0].id, 2);
+    assert.equal(series[0].booksCount, 5, 'uses the series total when known');
+    const r = rankResults('stormlight', { books: hits, authors, series });
+    assert.equal(r.series[0].name, 'The Stormlight Archive');
 });

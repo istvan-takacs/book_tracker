@@ -3,13 +3,26 @@
 
 import { parseDay, daysBetween } from './dates.js';
 
-/** Flatten books into finished reads within `year` (or every year when null). */
+/** The year a read was finished: from its date, or a year chosen when marking old reads. */
+export function readYear(r) {
+    return r.finishedAt ? Number(r.finishedAt.slice(0, 4)) : r.finishedYear ? Number(r.finishedYear) : null;
+}
+
+/** A finished read: dated, year-only ("read in 2019"), or date unknown ("I don't remember"). */
+export function isFinished(r) {
+    return !!(r && !r.abandonedAt && (r.finishedAt || r.finishedYear || r.dateUnknown));
+}
+
+/**
+ * Flatten books into finished reads within `year` (or every year when null).
+ * Year-only reads count in their year; undated reads only count all-time.
+ */
 export function finishedReads(books, year = null) {
     const out = [];
     for (const book of books) {
         for (const r of book.reads || []) {
-            if (!r.finishedAt) continue;
-            if (year && r.finishedAt.slice(0, 4) !== String(year)) continue;
+            if (!isFinished(r)) continue;
+            if (year && readYear(r) !== Number(year)) continue;
             out.push({ book, read: r });
         }
     }
@@ -25,7 +38,7 @@ export function computeStats(books, { year = null, minTasteBooks = 3 } = {}) {
     const pages = reads.map((x) => x.book.pageCount).filter(Boolean);
 
     const perMonth = Array(12).fill(0);
-    for (const { read } of reads) perMonth[Number(read.finishedAt.slice(5, 7)) - 1]++;
+    for (const { read } of reads) if (read.finishedAt) perMonth[Number(read.finishedAt.slice(5, 7)) - 1]++;
 
     const ratingDistribution = Object.fromEntries(Array.from({ length: 10 }, (_, i) => [i + 1, 0]));
     for (const r of ratings) ratingDistribution[r]++;

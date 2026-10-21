@@ -66,6 +66,38 @@ export function scoreSeries(query, s, ctx = {}) {
     return { score, text: m.score, kind: m.kind };
 }
 
+/**
+ * Author and series cards built from book search hits, so one Hardcover
+ * request (searchBooks) can fill all three result groups.
+ */
+export function deriveAuthorsAndSeries(books) {
+    const authors = new Map();
+    const series = new Map();
+    for (const b of books) {
+        for (const a of (b.authors || []).slice(0, 2)) {
+            if (!a?.name) continue;
+            const k = a.id ? `id:${a.id}` : `n:${normalize(a.name)}`;
+            const e = authors.get(k) || { hardcoverId: a.id || null, name: a.name, booksCount: 0, readers: 0, seriesNames: [] };
+            e.booksCount++;
+            e.readers += b.readersCount || 0;
+            if (b.series?.name && !e.seriesNames.includes(b.series.name)) e.seriesNames.push(b.series.name);
+            authors.set(k, e);
+        }
+        if (b.series?.name) {
+            const k = b.series.id ? `id:${b.series.id}` : `n:${normalize(b.series.name)}`;
+            const e = series.get(k) || { id: b.series.id || null, name: b.series.name, authorName: b.authors?.[0]?.name || null, authorId: b.authors?.[0]?.id || null, booksCount: 0, readersCount: 0, _hits: 0, _total: 0 };
+            e._hits++;
+            e._total = Math.max(e._total, b.series.total || 0);
+            e.booksCount = Math.max(e._hits, e._total);
+            e.readersCount += b.readersCount || 0;
+            series.set(k, e);
+        }
+    }
+    const byReaders = (x, y) => (y.readers ?? y.readersCount) - (x.readers ?? x.readersCount);
+    const tidy = ({ _hits, _total, ...rest }) => rest;
+    return { authors: [...authors.values()].sort(byReaders), series: [...series.values()].sort(byReaders).map(tidy) };
+}
+
 /** Keep one result per work: prefer the library copy, then the most popular. */
 export function collapseEditions(books) {
     const out = [];

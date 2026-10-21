@@ -3,6 +3,7 @@ import { store } from '../store.js';
 import { bookHref, SHELVES, releaseInfo } from '../components.js';
 import { unfollowAuthor, followAuthorAction, setSeriesFollow, authorKey } from '../actions.js';
 import { normalize } from '../lib/text.js';
+import { isFinished, readYear } from '../lib/stats.js';
 import { checkReleases, lastChecked } from '../releases.js';
 import { relativeDays, daysBetween, todayIso } from '../lib/dates.js';
 
@@ -22,11 +23,11 @@ function shelfView(query) {
     const all = [...store.books.values()].filter((b) => b.status !== 'upcoming' && b.status !== 'dismissed');
     const counts = Object.fromEntries(SHELVES.map(([id]) => [id, all.filter((b) => b.status === id).length]));
     const tags = [...new Set(all.flatMap((b) => b.tags || []))].sort();
-    const years = [...new Set(all.flatMap((b) => (b.reads || []).map((r) => r.finishedAt?.slice(0, 4)).filter(Boolean)))].sort().reverse();
+    const years = [...new Set(all.flatMap((b) => (b.reads || []).map((r) => readYear(r)).filter(Boolean).map(String)))].sort().reverse();
     const moods = [...new Set(all.flatMap((b) => (b.reads || []).flatMap((r) => [...(r.moods || []), ...Object.values(r.scales || {})])))].sort();
 
     let list = all.filter((b) => b.status === shelf || (shelf.startsWith('tag:') && (b.tags || []).includes(shelf.slice(4))));
-    if (year !== 'all') list = list.filter((b) => (b.reads || []).some((r) => r.finishedAt?.startsWith(year)));
+    if (year !== 'all') list = list.filter((b) => (b.reads || []).some((r) => String(readYear(r)) === year));
     if (mood !== 'any') list = list.filter((b) => (b.reads || []).some((r) => (r.moods || []).includes(mood) || Object.values(r.scales || {}).includes(mood)));
     const by = {
         rating: (a, b) => (b.rating ?? -1) - (a.rating ?? -1) || lastFinished(b).localeCompare(lastFinished(a)),
@@ -87,8 +88,9 @@ function subline(b) {
     if (b.status === 'dnf') { const r = (b.reads || []).at(-1); return r?.stoppedAt != null ? `stopped at ${Math.round(r.stoppedAt * 100)}%` : 'DNF'; }
     if (b.status === 'read') {
         const f = lastFinished(b);
-        const times = (b.reads || []).filter((r) => r.finishedAt).length;
-        return `${f ? new Date(f + 'T12:00:00Z').toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }) : 'Read'}${times > 1 ? ` · read ${times} times` : ''}`;
+        const times = (b.reads || []).filter((r) => isFinished(r)).length;
+        const y = (b.reads || []).map((r) => r.finishedYear).filter(Boolean).sort().at(-1);
+        return `${f ? new Date(f + 'T12:00:00Z').toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }) : y ? `Read in ${y}` : 'Read'}${times > 1 ? ` · read ${times} times` : ''}`;
     }
     return b.addedAt ? `added ${new Date(b.addedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'long' })}` : '';
 }
@@ -131,11 +133,12 @@ function seriesView() {
         const readCount = readPositions.size;
         const next = books.find((b) => !readPositions.has(b.position) && b.position > (s.maxPositionRead || 0));
         return html`<div class="card stack-sm">
-            <div class="row-between"><span class="title-sm">${s.name}</span><button type="button" class="btn btn-sm" aria-pressed="true" data-action="unfollowSeries" data-key="${s.key}">Following</button></div>
+            <div class="row-between"><a class="title-sm" href="${s.id ? `#/series/hc_${s.id}` : `#/series/name/${encodeURIComponent(s.name)}`}">${s.name}</a><button type="button" class="btn btn-sm" aria-pressed="true" data-action="unfollowSeries" data-key="${s.key}">Following</button></div>
             ${s.authorNames?.length ? html`<span class="small muted">${s.authorNames.join(', ')}</span>` : ''}
             ${books.length ? html`<div class="row" style="gap:6px;overflow-x:auto">${books.slice(0, 12).map((b) => html`<a href="${bookHref(b)}" style="opacity:${readPositions.has(b.position) ? 1 : 0.45}" aria-label="Book ${b.position}: ${b.title}${readPositions.has(b.position) ? ', read' : ''}">${cover(b, { size: 'xs', label: false })}</a>`)}</div>` : ''}
             ${total ? html`<div class="progress-bar"><span style="width:${Math.min(100, Math.round((readCount / total) * 100))}%"></span></div>` : ''}
             <div class="row-between small"><span class="strong">Read ${readCount}${total ? ` of ${total}` : ''}</span>${next ? html`<span class="sage strong">Next: book ${next.position}, ${next.title}</span>` : ''}</div>
+            <a class="btn btn-sm" href="${s.id ? `#/series/hc_${s.id}` : `#/series/name/${encodeURIComponent(s.name)}`}">See the series · mark books as read</a>
         </div>`;
     })}</div>`;
 }

@@ -44,3 +44,17 @@ test('goal progress against an even pace', () => {
     assert.equal(g.percent, 83);
     assert.equal(goalProgress(5, 0, '2026-10-19'), null);
 });
+
+test('year-only and undated reads (marked in bulk) count correctly', () => {
+    const old = [
+        { title: 'S1', pageCount: 300, authors: [{ name: 'A' }], reads: [{ finishedAt: null, finishedYear: 2019, rating: 8, formats: ['print'], bulk: true }] },
+        { title: 'S2', pageCount: 300, authors: [{ name: 'A' }], reads: [{ finishedAt: null, finishedYear: 2019, rating: 8, formats: ['print'], bulk: true }] },
+        { title: 'S3', pageCount: 300, authors: [{ name: 'A' }], reads: [{ finishedAt: null, dateUnknown: true, rating: 7, formats: ['print'], bulk: true }] },
+        { title: 'Now', authors: [{ name: 'B' }], reads: [{ startedAt: '2026-10-01', finishedAt: null }] },
+    ];
+    const y2019 = computeStats(old, { year: 2019 });
+    assert.equal(y2019.books, 2);
+    assert.deepEqual(y2019.perMonth, Array(12).fill(0), 'no month for year-only reads');
+    assert.equal(computeStats(old, { year: 2026 }).books, 0, 'undated reads are not in a specific year');
+    assert.equal(computeStats(old).books, 3, 'all-time counts year-only and undated, not reads in progress');
+});

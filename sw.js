@@ -2,17 +2,17 @@
 // next open) and book covers (cache-first). No notifications by design.
 // Bump VERSION when shipping changes to the shell.
 
-const VERSION = 'v3';
+const VERSION = 'v4';
 const SHELL = `bt-shell-${VERSION}`;
 const COVERS = 'bt-covers-v1';
 const MAX_COVERS = 400;
 
 const SHELL_FILES = [
     './', 'index.html', 'style.css', 'config.js', 'manifest.json', 'icons/icon.svg', 'icons/apple-touch-icon.png', 'icons/icon-192.png',
-    'js/app.js', 'js/ui.js', 'js/store.js', 'js/api.js', 'js/actions.js', 'js/components.js', 'js/services.js', 'js/releases.js', 'js/scanner.js', 'js/sample.js', 'js/firebase.js',
-    'js/lib/text.js', 'js/lib/isbn.js', 'js/lib/dates.js', 'js/lib/merge.js', 'js/lib/normalize.js', 'js/lib/search.js', 'js/lib/stats.js', 'js/lib/goodreads.js', 'js/lib/calendar.js', 'js/lib/follow.js', 'js/lib/progress.js',
-    'js/views/home.js', 'js/views/library.js', 'js/views/search.js', 'js/views/scan.js', 'js/views/upcoming.js', 'js/views/stats.js', 'js/views/settings.js', 'js/views/onboarding.js', 'js/views/book.js', 'js/views/author.js',
-    'js/sheets/progress.js', 'js/sheets/rate.js', 'js/sheets/releaseDate.js',
+    'js/app.js', 'js/ui.js', 'js/cache.js', 'js/keyboard.js', 'js/store.js', 'js/api.js', 'js/actions.js', 'js/components.js', 'js/services.js', 'js/releases.js', 'js/scanner.js', 'js/sample.js', 'js/firebase.js',
+    'js/lib/text.js', 'js/lib/isbn.js', 'js/lib/dates.js', 'js/lib/merge.js', 'js/lib/normalize.js', 'js/lib/search.js', 'js/lib/stats.js', 'js/lib/goodreads.js', 'js/lib/calendar.js', 'js/lib/follow.js', 'js/lib/progress.js', 'js/lib/moods.js', 'js/lib/rateLimiter.js',
+    'js/views/home.js', 'js/views/library.js', 'js/views/search.js', 'js/views/scan.js', 'js/views/upcoming.js', 'js/views/stats.js', 'js/views/settings.js', 'js/views/onboarding.js', 'js/views/book.js', 'js/views/author.js', 'js/views/series.js',
+    'js/sheets/progress.js', 'js/sheets/rate.js', 'js/sheets/releaseDate.js', 'js/sheets/seriesRead.js',
 ];
 
 self.addEventListener('install', (event) => {

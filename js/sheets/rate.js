@@ -4,10 +4,12 @@
 
 import { html, openSheet, raw } from '../ui.js';
 import { store } from '../store.js';
-import { finishBook, saveMoodsVocabulary } from '../actions.js';
+import { finishBook, saveMoodsVocabulary, metaOf } from '../actions.js';
 import { followDefault, followHint } from '../lib/follow.js';
 import { todayIso, formatDay } from '../lib/dates.js';
 import { normalize } from '../lib/text.js';
+import { suggestMoods, suggestionNote, MOODS } from '../lib/moods.js';
+import { bookDetails, hardcoverAvailable } from '../api.js';
 
 const LABELS = { 1: 'Awful', 2: 'Bad', 3: 'Poor', 4: 'Disappointing', 5: 'Okay', 6: 'Decent', 7: 'Good', 8: 'Great', 9: 'Superb', 10: 'All-time favourite' };
 const FORMATS = [['print', 'Print'], ['ebook', 'Ebook'], ['audio', 'Audio']];
@@ -17,13 +19,12 @@ const SCALES = [
     ['drivenBy', 'Driven by', [['plot', 'Plot'], ['both', 'Both'], ['characters', 'Characters']]],
 ];
 export const listJoin = (xs) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs.at(-1)}`);
-const STARTER_MOODS = ['adventurous', 'dark', 'emotional', 'funny', 'hopeful', 'mysterious', 'reflective', 'tense', 'cosy', 'epic', 'twisty', 'slow-burn'];
-
+/** Moods you have used, most used first, plus ones you created. */
 function moodsYouUse() {
     const counts = new Map();
     for (const b of store.books.values()) for (const r of b.reads || []) for (const m of r.moods || []) counts.set(m, (counts.get(m) || 0) + 1);
     const used = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([m]) => m);
-    return [...new Set([...used, ...(store.settings.customMoods || []), ...STARTER_MOODS])];
+    return [...new Set([...used, ...(store.settings.customMoods || [])])];
 }
 
 export function openRateSheet(book, { readIndex = null } = {}) {
@@ -33,7 +34,7 @@ export function openRateSheet(book, { readIndex = null } = {}) {
     const state = {
         rating: editing?.rating ?? null,
         startedAt: editing?.startedAt || '',
-        finishedAt: editing?.finishedAt || todayIso(),
+        finishedAt: editing?.finishedAt || (editing?.finishedYear || editing?.dateUnknown ? '' : todayIso()),
         formats: new Set(editing?.formats?.length ? editing.formats : [store.settings.defaultFormat || 'print']),
         scales: { ...(editing?.scales || {}) },
         moods: new Set(editing?.moods || []),
@@ -44,18 +45,26 @@ export function openRateSheet(book, { readIndex = null } = {}) {
         details: !!store.settings.finishSheetExpanded,
         dates: readIndex != null,
         adding: false,
+        moreMoods: false,
     };
     const author = (lib.authors || [])[0];
     const series = lib.series?.name ? lib.series : null;
     const alreadyAuthor = author && [...store.authors.values()].some((a) => a.followed && normalize(a.name) === normalize(author.name));
     const alreadySeries = series && [...store.series.values()].some((s) => s.followed && normalize(s.name) === normalize(series.name));
-    const suggested = (lib.communityMoods || []).map((m) => m.toLowerCase()).slice(0, 6);
+    // Suggestions for this book: Hardcover readers' moods, then its genres, then your own habits.
+    let bookForMoods = lib;
+    let suggestions = suggestMoods(bookForMoods, { history: [...store.books.values()] });
 
     const render = () => {
         const fa = state.followAuthor ?? followDefault(state.rating);
         const fs = state.followSeries ?? followDefault(state.rating);
         const chosen = FORMATS.filter(([id]) => state.formats.has(id)).map(([, l]) => l.toLowerCase());
+        const suggested = suggestions.map((x) => x.mood);
+        const note = suggestionNote(suggestions);
         const mine = moodsYouUse().filter((m) => !suggested.includes(m)).slice(0, 8);
+        // moods already chosen on this read stay visible even if not in either list
+        const shown = new Set([...suggested, ...mine, ...state.extraMoods]);
+        const others = [...state.moods].filter((m) => !shown.has(m));
         const chip = (m) => html`<button type="button" class="chip" aria-pressed="${String(state.moods.has(m))}" data-mood="${m}">${state.moods.has(m) ? '✓ ' : ''}${m}</button>`;
         return html`
         <div style="text-align:center" class="stack-sm">
@@ -71,7 +80,7 @@ export function openRateSheet(book, { readIndex = null } = {}) {
         ${state.dates ? html`<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
             <label class="field">Started reading<input class="input" type="date" data-field="startedAt" value="${state.startedAt}"></label>
             <label class="field">Finished reading<input class="input" type="date" data-field="finishedAt" value="${state.finishedAt}" max="${todayIso()}"></label></div>`
-        : html`<div class="row-between card card-tight" style="background:var(--surface-2)"><span><span class="muted">Finished</span> <strong>${state.finishedAt === todayIso() ? `today, ${formatDay(state.finishedAt, undefined, { weekday: false })}` : formatDay(state.finishedAt)}</strong></span><button type="button" class="btn-link" data-show-dates>Change</button></div>`}
+        : html`<div class="row-between card card-tight" style="background:var(--surface-2)"><span><span class="muted">Finished</span> <strong>${!state.finishedAt ? (editing?.finishedYear ? `in ${editing.finishedYear}` : 'date not recorded') : state.finishedAt === todayIso() ? `today, ${formatDay(state.finishedAt, undefined, { weekday: false })}` : formatDay(state.finishedAt)}</strong></span><button type="button" class="btn-link" data-show-dates>Change</button></div>`}
         <button type="button" class="btn btn-block" style="border-style:dashed;justify-content:space-between;min-height:56px" aria-expanded="${String(state.details)}" data-toggle-details>
             <span style="display:flex;flex-direction:column;align-items:flex-start;gap:2px"><span>${state.details ? 'Hide details' : 'Add details · optional'}</span><span class="small muted" style="font-weight:500">${state.details ? 'Stays open next time' : 'Format, how it felt, moods, review'}</span></span>
             <span aria-hidden="true" class="muted" style="font-size:20px">${state.details ? '−' : '+'}</span></button>
@@ -91,10 +100,15 @@ export function openRateSheet(book, { readIndex = null } = {}) {
         </section>
         <section class="stack-sm">
             <div class="row-between"><span class="eyebrow">Moods · optional</span><span class="small muted">${state.moods.size ? `${state.moods.size} selected` : 'None selected'}</span></div>
-            ${suggested.length ? html`<span class="small muted strong">Suggested for this book, from Hardcover readers</span><div class="chips">${suggested.map(chip)}</div>` : ''}
-            <span class="small muted strong">Moods you use most</span>
-            <div class="chips">${[...mine, ...state.extraMoods].map(chip)}
-                ${state.adding ? '' : html`<button type="button" class="chip chip-dashed" data-add-mood>+ New mood</button>`}</div>
+            ${suggested.length ? html`<span class="small muted strong">Suggested for this book${note ? ` · ${note[0].toLowerCase()}${note.slice(1)}` : ''}</span><div class="chips">${suggested.map(chip)}</div>`
+                : html`<span class="small muted">No suggestions for this book yet. Pick from your moods or open “More moods”.</span>`}
+            ${mine.length || state.extraMoods.length || others.length ? html`<span class="small muted strong">Moods you use most</span>
+            <div class="chips">${[...mine, ...state.extraMoods, ...others].map(chip)}</div>` : ''}
+            <div class="row wrap" style="gap:8px">
+                <button type="button" class="chip" aria-expanded="${String(state.moreMoods)}" data-more-moods>${state.moreMoods ? 'Fewer moods' : 'More moods'}</button>
+                ${state.adding ? '' : html`<button type="button" class="chip chip-dashed" data-add-mood>+ New mood</button>`}
+            </div>
+            ${state.moreMoods ? Object.entries(MOODS).map(([group, list]) => html`<span class="small muted strong">${group}</span><div class="chips">${list.filter((m) => !suggested.includes(m)).map(chip)}</div>`) : ''}
             ${state.adding ? html`<div class="row"><label class="grow"><span class="visually-hidden">New mood name</span><input class="input" data-new-mood placeholder="e.g. comfort read" maxlength="30"></label><button type="button" class="btn btn-primary" data-commit-mood>Add</button><button type="button" class="btn" data-cancel-mood>Cancel</button></div>` : ''}
             <span class="small muted">New moods are saved and offered again on future books.</span>
         </section>
@@ -120,6 +134,23 @@ export function openRateSheet(book, { readIndex = null } = {}) {
                 el.scrollTop = top;
                 el.querySelector('[data-new-mood]')?.focus();
             };
+            // Missing mood or genre data (e.g. a book added from a search result):
+            // fetch it once (cached) so suggestions fit this book.
+            const key = book.key || lib.key;
+            if (key && (!lib.communityMoods?.length || !lib.genres?.length) && (lib.hardcoverId ? hardcoverAvailable() : true)) {
+                bookDetails(key, lib).then((detail) => {
+                    if (!detail || !el.isConnected) return;
+                    bookForMoods = { ...lib, communityMoods: detail.communityMoods?.length ? detail.communityMoods : lib.communityMoods, genres: detail.genres?.length ? detail.genres : lib.genres };
+                    suggestions = suggestMoods(bookForMoods, { history: [...store.books.values()] });
+                    rerender();
+                    if (store.get('books', key)) {
+                        const m = metaOf(detail);
+                        const patch = {};
+                        for (const f of ['communityMoods', 'genres', 'contentWarnings']) if (m[f]?.length && !lib[f]?.length) patch[f] = m[f];
+                        if (Object.keys(patch).length) store.save('books', key, patch);
+                    }
+                }).catch(() => null);
+            }
             el.addEventListener('input', (e) => {
                 const f = e.target.dataset.field;
                 if (f) state[f] = e.target.value;
@@ -146,6 +177,7 @@ export function openRateSheet(book, { readIndex = null } = {}) {
                     rerender();
                 } else if (d.scale) { state.scales[d.scale] = state.scales[d.scale] === d.value ? undefined : d.value; rerender(); }
                 else if (d.mood) { state.moods.has(d.mood) ? state.moods.delete(d.mood) : state.moods.add(d.mood); rerender(); }
+                else if ('moreMoods' in d) { state.moreMoods = !state.moreMoods; rerender(); }
                 else if ('addMood' in d) { state.adding = true; rerender(); }
                 else if ('cancelMood' in d) { state.adding = false; rerender(); }
                 else if ('commitMood' in d) {
@@ -160,7 +192,7 @@ export function openRateSheet(book, { readIndex = null } = {}) {
                 else if ('save' in d && state.rating) {
                     close();
                     await finishBook(lib, {
-                        rating: state.rating, startedAt: state.startedAt || null, finishedAt: state.finishedAt || todayIso(),
+                        rating: state.rating, startedAt: state.startedAt || null, finishedAt: state.finishedAt || null,
                         formats: [...state.formats], scales: Object.fromEntries(Object.entries(state.scales).filter(([, v]) => v)),
                         moods: [...state.moods], review: state.review.trim() || null,
                         followAuthor: alreadyAuthor ? false : state.followAuthor, followSeries: alreadySeries ? false : state.followSeries, readIndex,

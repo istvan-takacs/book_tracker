@@ -36,10 +36,10 @@ async function run(force) {
 
     const found = new Map();
     for (const ids of chunk(authorIds, 50)) {
-        for (const b of await upcomingForAuthors(ids, since, year)) if (!b.compilation) found.set(b.key, b);
+        for (const b of await upcomingForAuthors(ids, since, year, { priority: 'background' })) if (!b.compilation) found.set(b.key, b);
     }
     for (const ids of chunk(followedSeries.map((s) => s.id), 50)) {
-        for (const s of await seriesBooks(ids)) {
+        for (const s of await seriesBooks(ids, { priority: 'background' })) {
             const seriesDoc = followedSeries.find((x) => x.id === s.id);
             const key = `hc_${s.id}`;
             await store.save('series', key, {

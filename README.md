@@ -41,6 +41,14 @@ In Google Cloud console (same project): enable the **Books API**, create an API 
    ```
 5. Put the Worker URL (`https://book-tracker.<you>.workers.dev`) in `workerUrl` in `config.js`.
 
+**Hardcover's limit is a burst of 10 requests, refilling at 1 per second.** The app keeps well inside it:
+- A search costs one request, and only after you stop typing.
+- Library books aren't re-fetched for a week.
+- Background work waits until requests are free.
+- Answers are cached on your device and in the Worker.
+
+If the limit is hit anyway, search quietly uses your library, Google Books and Open Library, and the Worker serves its last good answer.
+
 The Worker only runs the read-only queries listed in `worker/src/queries.js`. It checks your Firebase sign-in on every request and only accepts the user IDs in `ALLOWED_UIDS`. When the Hardcover token expires, Settings → Book data sources shows "Needs a new access token". Make a new token and run `wrangler secret put HARDCOVER_TOKEN` again.
 
 ### 4. Calendar feed (optional, recommended)

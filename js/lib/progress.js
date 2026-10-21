@@ -42,3 +42,24 @@ export function stepFor(mode, { pages = null, audioSeconds = null } = {}) {
 export function availableModes({ pages = null, audioSeconds = null } = {}) {
     return [pages && 'page', 'percent', audioSeconds && 'time'].filter(Boolean);
 }
+
+/** Audiobook time left at this position, in seconds. */
+export function remainingSeconds(fraction, audioSeconds) {
+    if (!audioSeconds) return null;
+    return Math.max(0, Math.round((1 - clamp01(fraction)) * audioSeconds));
+}
+
+/**
+ * Parse how audiobook apps show time: "5:08" (h:mm), "308" (minutes),
+ * "5h 8m", "5 h 08 min", "45m". Returns seconds, or null if unreadable.
+ */
+export function parseDuration(text) {
+    const s = String(text ?? '').trim().toLowerCase();
+    if (!s) return null;
+    let m = /^(\d{1,3}):([0-5]?\d)$/.exec(s);
+    if (m) return (Number(m[1]) * 60 + Number(m[2])) * 60;
+    if (/^\d{1,5}$/.test(s)) return Number(s) * 60;
+    m = /^(?:(\d{1,3})\s*h(?:ours?|rs?)?)?\s*(?:(\d{1,3})\s*m(?:in(?:ute)?s?)?)?\s*(?:left)?$/.exec(s);
+    if (m && (m[1] || m[2])) return ((Number(m[1]) || 0) * 60 + (Number(m[2]) || 0)) * 60;
+    return null;
+}

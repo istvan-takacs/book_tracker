@@ -4,6 +4,7 @@ import { html, raw, icon, cover, authorLinks, seriesLabel, plural, fmtNumber } f
 import { effectiveRelease, formatRelease, daysBetween, relativeDays, todayIso } from './lib/dates.js';
 import { googleCalendarUrl, releaseEvent } from './lib/calendar.js';
 import { store } from './store.js';
+import { isFinished } from './lib/stats.js';
 import { appUrl } from '../config.js';
 
 export const SHELVES = [['want', 'TBR'], ['reading', 'Reading'], ['read', 'Read'], ['dnf', 'DNF']];
@@ -43,7 +44,7 @@ export function calendarLink(book, { compact = false } = {}) {
 export function libraryStatus(book) {
     const lib = inLibrary(book) || (book.status ? book : null);
     if (!lib) return null;
-    const reads = (lib.reads || []).filter((r) => r.finishedAt);
+    const reads = (lib.reads || []).filter((r) => isFinished(r));
     if (lib.status === 'read') return lib.rating != null ? `You rated it ${lib.rating} out of 10${reads.length > 1 ? ` · read ${plural(reads.length, 'time')}` : ''}` : 'Read';
     if (lib.status === 'reading') return `Reading · ${Math.round((lib.progress?.fraction || 0) * 100)}% done`;
     if (lib.status === 'want') return 'On your TBR';

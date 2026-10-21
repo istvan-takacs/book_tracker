@@ -273,3 +273,15 @@ input[type="range"] { width: 100%; height: 44px; accent-color: var(--accent); }
     *, *::before, *::after { animation: none !important; transition: none !important; }
 }
 .noscript { padding: 40px 20px; text-align: center; }
+
+/* ─── On-screen keyboard (iOS) ───────────────────────────────
+   js/keyboard.js sets --kb to the height the keyboard covers and adds
+   body.kb-open. iOS doesn't move fixed-bottom elements when the keyboard
+   opens, so lift the search bar, sheets and toasts above it. */
+:root { --kb: 0px; }
+body.kb-open .tabs { display: none; }
+body.kb-open .searchbar { bottom: var(--kb); padding-bottom: 8px; }
+body.kb-open .search-view { padding-bottom: calc(var(--kb) + 100px); }
+body.kb-open .sheet { bottom: var(--kb); max-height: calc(100dvh - var(--kb) - var(--safe-top) - 12px); }
+body.kb-open .sheet-body { padding-bottom: 16px; }
+body.kb-open .toast { bottom: calc(var(--kb) + 12px); }

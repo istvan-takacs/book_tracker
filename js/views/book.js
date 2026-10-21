@@ -8,6 +8,7 @@ import { openRateSheet, listJoin } from '../sheets/rate.js';
 import { openReleaseDateSheet } from '../sheets/releaseDate.js';
 import { formatDay, todayIso, daysBetween } from '../lib/dates.js';
 import { formatDuration } from '../lib/progress.js';
+import { isFinished } from '../lib/stats.js';
 
 // Details fetched this session, so returning to a book is instant.
 const details = new Map();
@@ -24,35 +25,47 @@ function currentBook(key) {
     return lib || d || null;
 }
 
+const REFRESH_AFTER = 7 * 24 * 60 * 60 * 1000;
+
 async function load(key, rerender) {
     const known = currentBook(key);
-    try {
-        const fresh = await bookDetails(key, known);
-        if (fresh) {
-            details.set(key, fresh);
-            // keep the library copy's metadata current without touching your data
-            const lib = store.get('books', key);
-            if (lib) {
-                const patch = {};
-                for (const [k, v] of Object.entries(metaOf(fresh))) {
-                    if (['verified', 'sources', 'releaseDate', 'datePrecision'].includes(k)) continue;
-                    if (lib[k] == null || (Array.isArray(lib[k]) && !lib[k].length)) patch[k] = v;
+    const lib = store.get('books', key);
+    // Library books keep their details in Firestore; only ask Hardcover again
+    // when they are a week old (saves requests on every reopen).
+    const fetchedAt = Date.parse(lib?.metaFetchedAt || '') || 0;
+    const fresh = lib && lib.title && Date.now() - fetchedAt < REFRESH_AFTER;
+    if (!fresh) {
+        try {
+            const detail = await bookDetails(key, known);
+            if (detail) {
+                details.set(key, detail);
+                // keep the library copy's metadata current without touching your data
+                const current = store.get('books', key);
+                if (current) {
+                    const patch = { metaFetchedAt: new Date().toISOString() };
+                    for (const [k, v] of Object.entries(metaOf(detail))) {
+                        if (['verified', 'sources', 'releaseDate', 'datePrecision'].includes(k)) continue;
+                        const empty = current[k] == null || (Array.isArray(current[k]) && !current[k].length);
+                        // community data changes over time: refresh it on each weekly fetch
+                        if (empty || ['communityMoods', 'genres', 'contentWarnings', 'communityRating', 'ratingsCount', 'readersCount', 'similarIds'].includes(k)) patch[k] = v;
+                    }
+                    store.save('books', key, patch);
                 }
-                if (Object.keys(patch).length) store.save('books', key, patch);
             }
-        }
-    } catch (e) { console.warn('[book] details', e); }
-    rerender();
+        } catch (e) { console.warn('[book] details', e); }
+        rerender();
+    }
     const b = currentBook(key);
     if (!b || !hardcoverAvailable()) return;
     const ex = extras.get(key) || {};
-    try {
-        if (b.series?.id && !ex.series) {
-            const [s] = await seriesBooks([b.series.id]);
-            ex.series = s || null;
-        }
-        if (b.similarIds?.length && !ex.similar) ex.similar = await booksByIds(b.similarIds.slice(0, 12));
-    } catch { /* optional sections */ }
+    if (b.series?.id && !ex.series) {
+        try { const [s] = await seriesBooks([b.series.id]); ex.series = s || null; } catch { /* optional section */ }
+    }
+    // "More like this" is nice-to-have: background priority, so it never
+    // competes with what you're doing for Hardcover requests
+    if (b.similarIds?.length && !ex.similar) {
+        try { ex.similar = await booksByIds(b.similarIds.slice(0, 12)); } catch { /* optional section */ }
+    }
     extras.set(key, ex);
     rerender();
 }
@@ -98,7 +111,7 @@ export default {
         const today = todayIso();
         const isFuture = rel.date && rel.date > today;
         const reads = lib?.reads || [];
-        const finished = reads.map((r, i) => ({ r, i })).filter(({ r }) => r.finishedAt || r.abandonedAt);
+        const finished = reads.map((r, i) => ({ r, i })).filter(({ r }) => isFinished(r) || r.abandonedAt);
         const current = status === 'reading' ? reads.at(-1) : null;
         const cr = communityRating(b);
         const ex = extras.get(key) || {};
@@ -178,7 +191,7 @@ export default {
                 ${lib?.review ? html`<p style="font:16px/1.5 var(--display)">“${lib.review}”</p>` : ''}
                 ${finished.some(({ r }) => r.moods?.length) ? html`<span class="small muted">Your moods: ${[...new Set(finished.flatMap(({ r }) => r.moods || []))].join(', ')}</span>` : ''}</section>` : ''}
 
-            ${seriesList.length ? html`<section class="stack-sm"><h2 class="eyebrow">In this series</h2><div class="list">${seriesList.map((sb) => {
+            ${seriesList.length ? html`<section class="stack-sm"><div class="row-between"><h2 class="eyebrow">In this series</h2><a class="btn-link" href="${b.series?.id ? `#/series/hc_${b.series.id}` : `#/series/name/${encodeURIComponent(b.series?.name || '')}`}">See the whole series</a></div><div class="list">${seriesList.map((sb) => {
                 const mine = store.get('books', sb.key);
                 const sbRel = releaseInfo(sb);
                 const future = sbRel.date && sbRel.date > today;
@@ -188,6 +201,7 @@ export default {
                     <span class="small strong ${mine?.rating ? 'accent' : 'muted'}">${mine?.status === 'read' && mine.rating ? `You: ${mine.rating}` : mine?.status === 'want' ? 'TBR' : mine?.status === 'reading' ? 'Reading' : future ? 'Coming' : ''}</span></a>`;
             })}</div></section>` : ''}
 
+            ${!seriesList.length && b.series?.name ? html`<a class="card row-between" href="${b.series.id ? `#/series/hc_${b.series.id}` : `#/series/name/${encodeURIComponent(b.series.name)}`}"><span><span class="eyebrow">Series</span><br><span class="strong">${b.series.name}</span></span><span class="accent strong small">See the whole series</span></a>` : ''}
             <section class="list">${panels.map((p) => {
                 const open = openPanels.has(p.id);
                 const body = p.links ? p.links.map(([k, label, href]) => html`<div class="kv"><span>${k}</span><a class="accent" href="${href}" target="_blank" rel="noopener">${label}</a></div>`)
@@ -223,7 +237,7 @@ export default {
         finish(el, e, ctx) { const b = currentBook(ctx.key); if (b) openRateSheet({ ...b, key: ctx.key }); },
         editRating(el, e, ctx) {
             const b = store.get('books', ctx.key);
-            const idx = (b?.reads || []).map((r, i) => (r.finishedAt ? i : -1)).filter((i) => i >= 0).at(-1);
+            const idx = (b?.reads || []).map((r, i) => (isFinished(r) ? i : -1)).filter((i) => i >= 0).at(-1);
             if (b) openRateSheet(b, { readIndex: idx ?? null });
         },
         editRead(el, e, ctx) { const b = store.get('books', ctx.key); if (b) openRateSheet(b, { readIndex: Number(el.dataset.index) }); },
@@ -244,6 +258,8 @@ export default {
 
 function readDates(r) {
     const today = todayIso();
+    if (!r.finishedAt && !r.abandonedAt && r.finishedYear) return `Read in ${r.finishedYear}`;
+    if (!r.finishedAt && !r.abandonedAt && r.dateUnknown) return 'Read · date not recorded';
     const end = r.finishedAt || r.abandonedAt;
     if (r.startedAt && end) {
         const days = daysBetween(r.startedAt, end) + 1;

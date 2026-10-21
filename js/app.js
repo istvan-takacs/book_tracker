@@ -16,6 +16,9 @@ import settings from './views/settings.js';
 import onboarding from './views/onboarding.js';
 import book from './views/book.js';
 import author from './views/author.js';
+import series from './views/series.js';
+import { startKeyboardTracking } from './keyboard.js';
+import { pruneCache } from './api.js';
 
 const ROUTES = [
     [/^\/?$/, home],
@@ -31,6 +34,8 @@ const ROUTES = [
     [/^\/book\/(.+)$/, book, (m) => ({ key: m[1] })],
     [/^\/author\/(hc_\d+)$/, author, (m) => ({ key: m[1] })],
     [/^\/author\/name\/(.+)$/, author, (m) => ({ name: m[1] })],
+    [/^\/series\/(hc_\d+)$/, series, (m) => ({ key: m[1] })],
+    [/^\/series\/name\/(.+)$/, series, (m) => ({ name: m[1] })],
 ];
 
 function resolve() {
@@ -126,6 +131,8 @@ window.addEventListener('bt:rerender', () => { if (current) paint(current, { kee
 window.addEventListener('hashchange', navigate);
 window.addEventListener('online', () => { processScanQueue(); toast('Back online'); });
 onSourceStatus(() => rerender());
+startKeyboardTracking();
+setTimeout(() => pruneCache().catch(() => null), 5000);
 store.onError((err) => toast(err?.code === 'permission-denied' ? 'That change wasn’t allowed. Try signing out and in again.' : 'A change couldn’t be saved. It will be retried when you’re back online.'));
 
 // ─── Boot ───────────────────────────────────────────────────────────

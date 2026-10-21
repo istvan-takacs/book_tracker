@@ -32,6 +32,29 @@ function hcAuthors(contribs, names) {
     return arr(names).map((n) => ({ id: null, name: n }));
 }
 
+/**
+ * Tags of one category from `cached_tags`, most-tagged first. The column is
+ * undocumented jsonb, so accept both likely shapes:
+ *   { "Mood": [{ tag, count }], "Genre": [...] }   (keyed by category)
+ *   [{ tag, category, count }]                      (flat list)
+ */
+export function tagsInCategory(cached, category) {
+    if (!cached) return [];
+    const data = typeof cached === 'string' ? (() => { try { return JSON.parse(cached); } catch { return null; } })() : cached;
+    if (!data) return [];
+    const want = category.toLowerCase().replace(/[\s_-]+/g, '');
+    const sameCat = (c) => String(c || '').toLowerCase().replace(/[\s_-]+/g, '') === want;
+    let list = [];
+    if (Array.isArray(data)) list = data.filter((t) => sameCat(t?.category || t?.categorySlug || t?.tag_category?.category));
+    else for (const [k, v] of Object.entries(data)) if (sameCat(k) || sameCat(k.replace(/s$/, ''))) list = list.concat(arr(v));
+    return list
+        .map((t, i) => ({ name: typeof t === 'string' ? t : t?.tag || t?.name, count: Number(t?.count ?? t?.taggingsCount ?? 0), i }))
+        .filter((t) => t.name)
+        .sort((a, b) => b.count - a.count || a.i - b.i)
+        .map((t) => t.name)
+        .filter((n, i, all) => all.indexOf(n) === i);
+}
+
 /** A Typesense hit document from `search(query_type: "book")`. */
 export function fromHardcoverHit(doc) {
     if (!doc) return null;
@@ -83,8 +106,7 @@ export function fromHardcoverBook(b) {
         audioSeconds: num(e.audio_seconds),
         publisher: str(e.publisher?.name),
     }));
-    const tags = b.cached_tags || {};
-    const tagList = (key) => tagNames(tags[key] || tags[key.toLowerCase()]);
+    const tagList = (category) => tagsInCategory(b.cached_tags, category);
     return {
         hardcoverId: num(b.id),
         slug: str(b.slug),

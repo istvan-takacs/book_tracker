@@ -8,6 +8,7 @@ import { normalize } from './lib/text.js';
 import { resolveFollow } from './lib/follow.js';
 import { importGoodreads as parseGoodreads } from './lib/goodreads.js';
 import { sameBook } from './lib/merge.js';
+import { isFinished } from './lib/stats.js';
 import { lookupIsbn, searchAll } from './api.js';
 
 export const SHELF_LABELS = { want: 'TBR', reading: 'Reading', read: 'Read', dnf: 'DNF', upcoming: 'Upcoming' };
@@ -46,14 +47,14 @@ export async function setShelf(meta, status, { quiet = false } = {}) {
     if (status === 'reading') {
         const reads = [...(before?.reads || [])];
         const last = reads[reads.length - 1];
-        if (!last || last.finishedAt || last.abandonedAt) reads.push({ startedAt: todayIso(), finishedAt: null, rating: null, formats: [store.settings.defaultFormat || 'print'] });
+        if (!last || isFinished(last) || last.abandonedAt) reads.push({ startedAt: todayIso(), finishedAt: null, rating: null, formats: [store.settings.defaultFormat || 'print'] });
         patch.reads = reads;
         patch.progress = before?.status === 'reading' ? before.progress : { fraction: 0, mode: before?.progress?.mode || null, updatedAt: now };
     }
     if (status === 'dnf') {
         const reads = [...(before?.reads || [])];
         const last = reads[reads.length - 1];
-        if (last && !last.finishedAt) reads[reads.length - 1] = { ...last, abandonedAt: todayIso(), stoppedAt: before?.progress?.fraction ?? null };
+        if (last && !isFinished(last)) reads[reads.length - 1] = { ...last, abandonedAt: todayIso(), stoppedAt: before?.progress?.fraction ?? null };
         patch.reads = reads;
     }
     await store.save('books', key, patch);
@@ -86,11 +87,15 @@ export async function finishBook(meta, { rating, startedAt, finishedAt, formats,
     const key = meta.key;
     const before = snapshot(key);
     const reads = [...(before?.reads || [])];
-    const entry = { startedAt: startedAt || null, finishedAt: finishedAt || todayIso(), rating, formats: formats?.length ? formats : ['print'], scales: scales || {}, moods: moods || [] };
-    let idx = readIndex ?? reads.findIndex((r) => !r.finishedAt && !r.abandonedAt);
+    const entry = { startedAt: startedAt || null, finishedAt: finishedAt || null, rating, formats: formats?.length ? formats : ['print'], scales: scales || {}, moods: moods || [] };
+    let idx = readIndex ?? reads.findIndex((r) => !isFinished(r) && !r.abandonedAt);
+    // editing a read marked 'read in 2019' / 'date unknown' keeps that unless a date is given
+    const prev = idx >= 0 && idx != null ? reads[idx] : null;
+    if (!entry.finishedAt && !(prev && (prev.finishedYear || prev.dateUnknown))) entry.finishedAt = todayIso();
+    if (entry.finishedAt) Object.assign(entry, { finishedYear: null, dateUnknown: false });
     if (idx === -1 || idx == null) { reads.push(entry); idx = reads.length - 1; }
     else reads[idx] = { ...reads[idx], ...entry, startedAt: entry.startedAt || reads[idx].startedAt };
-    const latest = [...reads].reverse().find((r) => r.finishedAt);
+    const latest = [...reads].reverse().find((r) => isFinished(r));
     await store.save('books', key, {
         ...(before ? {} : metaOf(meta)),
         status: 'read', reads, rating: latest?.rating ?? rating,
@@ -278,10 +283,70 @@ export function exportCsv() {
     const cols = ['Title', 'Authors', 'Series', 'Book in series', 'Shelf', 'Your rating (out of 10)', 'Times read', 'Last finished', 'Formats', 'Moods', 'ISBN-13', 'Pages', 'Review'];
     const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const rows = [...store.books.values()].filter((b) => b.status !== 'upcoming').map((b) => {
-        const finished = (b.reads || []).filter((r) => r.finishedAt);
+        const finished = (b.reads || []).filter((r) => isFinished(r));
         const last = finished[finished.length - 1];
         return [b.title, (b.authors || []).map((a) => a.name).join('; '), b.series?.name, b.series?.position, SHELF_LABELS[b.status] || b.status, b.rating, finished.length,
-            last?.finishedAt, [...new Set(finished.flatMap((r) => r.formats || []))].join('; '), [...new Set(finished.flatMap((r) => r.moods || []))].join('; '), b.isbn13, b.pageCount, b.review].map(q).join(',');
+            last?.finishedAt || last?.finishedYear, [...new Set(finished.flatMap((r) => r.formats || []))].join('; '), [...new Set(finished.flatMap((r) => r.moods || []))].join('; '), b.isbn13, b.pageCount, b.review].map(q).join(',');
     });
     download(`book-tracker-library-${todayIso()}.csv`, 'text/csv', [cols.map(q).join(','), ...rows].join('\r\n'));
+}
+
+// ─── Series in bulk ─────────────────────────────────────────────────
+
+/**
+ * Mark several books in a series as read in one go (for series read in the
+ * past). `year` null means "I don't remember": the reads count all-time only.
+ * One Undo restores every book, the series and any new follows.
+ */
+export async function markSeriesRead(series, books, { rating = null, year = null, formats = ['print'], followSeries = false, followAuthor = false }) {
+    if (!books.length) return;
+    const now = new Date().toISOString();
+    const before = new Map(books.map((b) => [b.key, snapshot(b.key)]));
+    const ops = books.map((b) => {
+        const prev = store.get('books', b.key);
+        const reads = [...(prev?.reads || []), { startedAt: null, finishedAt: null, finishedYear: year || null, dateUnknown: !year, rating, formats, bulk: true }];
+        return {
+            collection: 'books', key: b.key,
+            patch: { ...(prev ? {} : metaOf(b)), status: 'read', rating: rating ?? prev?.rating ?? null, reads, addedAt: prev?.addedAt || now, updatedAt: now },
+        };
+    });
+    const undo = [];
+    const sKey = seriesKey(series);
+    if (sKey) {
+        const prev = store.get('series', sKey);
+        undo.push(() => store.put('series', sKey, prev ? structuredClone(prev) : null));
+        const maxPositionRead = Math.max(prev?.maxPositionRead || 0, ...books.map((b) => b.series?.position || 0));
+        ops.push({ collection: 'series', key: sKey, patch: { id: series.id || null, name: series.name, authorNames: series.author?.name ? [series.author.name] : prev?.authorNames || [], maxPositionRead, followed: followSeries || !!prev?.followed } });
+    }
+    if (followAuthor && series.author?.name) {
+        const aKey = authorKey(series.author);
+        const prev = store.get('authors', aKey);
+        if (!prev?.followed) {
+            undo.push(() => store.put('authors', aKey, prev ? structuredClone(prev) : null));
+            ops.push({ collection: 'authors', key: aKey, patch: { hardcoverId: series.author.id || null, name: series.author.name, followed: true, followedAt: now, followedVia: sKey } });
+        }
+    }
+    await store.batch(ops);
+    toast(`Marked ${books.length === 1 ? '1 book' : `${books.length} books`} in ${series.name} as read`, {
+        undo: async () => {
+            for (const [key, doc] of before) await store.put('books', key, doc);
+            for (const u of undo) await u();
+        },
+    });
+}
+
+/**
+ * Set your rating for a book from a list (Series page, adjust-ratings step).
+ * Rates the latest finished read; an unread book becomes "read, date unknown".
+ */
+export async function rateBookQuick(meta, rating) {
+    const key = meta.key;
+    const before = snapshot(key);
+    const reads = [...(before?.reads || [])];
+    let i = -1;
+    for (let j = reads.length - 1; j >= 0; j--) if (isFinished(reads[j])) { i = j; break; }
+    if (i >= 0) reads[i] = { ...reads[i], rating };
+    else reads.push({ startedAt: null, finishedAt: null, dateUnknown: true, rating, formats: [store.settings.defaultFormat || 'print'], bulk: true });
+    await store.save('books', key, { ...(before ? {} : { ...metaOf(meta), addedAt: new Date().toISOString() }), status: 'read', rating, reads });
+    toast(`Rated ${meta.title} ${rating} out of 10`, { undo: undoTo(key, before) });
 }

@@ -1,6 +1,6 @@
 import { html, plural, fmtNumber } from '../ui.js';
 import { store } from '../store.js';
-import { computeStats, goalProgress } from '../lib/stats.js';
+import { computeStats, goalProgress, readYear } from '../lib/stats.js';
 import { todayIso, MONTHS } from '../lib/dates.js';
 import { goalRing } from '../components.js';
 
@@ -11,7 +11,7 @@ export default {
     render({ query }) {
         const today = todayIso();
         const books = [...store.books.values()];
-        const years = [...new Set(books.flatMap((b) => (b.reads || []).map((r) => r.finishedAt?.slice(0, 4)).filter(Boolean)))].sort().reverse();
+        const years = [...new Set(books.flatMap((b) => (b.reads || []).map((r) => readYear(r)).filter(Boolean).map(String)))].sort().reverse();
         if (!years.includes(today.slice(0, 4))) years.unshift(today.slice(0, 4));
         const year = query.get('year') || today.slice(0, 4);
         const all = year === 'all';

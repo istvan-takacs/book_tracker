@@ -13,9 +13,25 @@ import { verifyIdToken, googleKeys } from './firebaseAuth.js';
 import { getDoc, listDocs } from './firestore.js';
 import { buildIcs, calendarBooks, releaseEvent } from '../../js/lib/calendar.js';
 import { todayIso } from '../../js/lib/dates.js';
+import { parseRateLimit } from '../../js/lib/rateLimiter.js';
 
 const HARDCOVER_URL = 'https://api.hardcover.app/v1/graphql';
 const USER_AGENT = 'book-tracker personal app (Cloudflare Worker)';
+
+const STALE_SECONDS = 7 * 24 * 3600;
+
+/** Hardcover's RateLimit / Retry-After headers, as x-hc-remaining / x-hc-reset / retry-after. */
+export function rateHeaders(res) {
+    const out = {};
+    const parsed = parseRateLimit(res.headers.get('ratelimit'));
+    const legacy = res.headers.get('x-ratelimit-remaining');
+    const remaining = parsed?.remaining ?? (legacy != null ? Number(legacy) : null);
+    if (Number.isFinite(remaining)) out['x-hc-remaining'] = String(remaining);
+    if (parsed?.reset) out['x-hc-reset'] = String(parsed.reset);
+    const retry = res.headers.get('retry-after');
+    if (retry) out['retry-after'] = retry;
+    return out;
+}
 
 function json(body, status = 200, headers = {}) {
     return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json; charset=utf-8', ...headers } });
@@ -32,6 +48,7 @@ function corsHeaders(origin, env) {
         'access-control-allow-methods': 'POST, GET, OPTIONS',
         'access-control-allow-headers': 'authorization, content-type',
         'access-control-max-age': '86400',
+        'access-control-expose-headers': 'x-hc-remaining, x-hc-reset, retry-after, x-cache',
         vary: 'Origin',
     };
 }
@@ -52,7 +69,7 @@ function hardcoverFailure(status, body) {
     // Hardcover's own reason (never the token) helps tell an expired token from a missing scope.
     const detail = [body?.error, body?.error_description, body?.scope && `missing scope: ${body.scope}`, body?.message].filter((x) => typeof x === 'string' && x).join(' · ').slice(0, 300) || null;
     if (status === 401) return json({ error: 'hardcover_token', message: 'Hardcover rejected the access token (missing, invalid or expired).', detail, hardcoverStatus: status }, 503);
-    if (status === 429) return json({ error: 'rate_limited', message: 'Hardcover rate limit reached. Try again shortly.', detail, hardcoverStatus: status }, 429);
+    if (status === 429) return json({ error: 'rate_limited', message: 'Book data limit reached for the moment.', detail, hardcoverStatus: status }, 429);
     if (status === 403) return json({ error: 'hardcover_forbidden', message: 'Hardcover refused the query (often a missing token scope).', detail, hardcoverStatus: status }, 502);
     return json({ error: 'hardcover_unavailable', message: `Hardcover responded with ${status}.`, detail, hardcoverStatus: status }, 502);
 }
@@ -85,14 +102,22 @@ export function createHandler({ fetchImpl = (...a) => fetch(...a), cache = null,
         const problem = validateVariables(opName, variables);
         if (problem) return json({ error: problem }, 400, cors);
 
+        // Cached answers are kept for a week: fresh within the operation's TTL,
+        // and used as a fallback when Hardcover is rate-limiting or down.
         const cacheKey = new Request(`https://cache.book-tracker/${opName}/${await sha256Hex(JSON.stringify(variables))}`);
+        let stale = null;
         if (cache) {
             const hit = await cache.match(cacheKey);
             if (hit) {
-                const body = await hit.text();
-                return new Response(body, { headers: { 'content-type': 'application/json; charset=utf-8', 'x-cache': 'hit', ...cors } });
+                const fetchedAt = Number(hit.headers.get('x-fetched-at')) || 0;
+                const text = await hit.text();
+                if (now() - fetchedAt < op.ttl * 1000) {
+                    return new Response(text, { headers: { 'content-type': 'application/json; charset=utf-8', 'x-cache': 'hit', ...cors } });
+                }
+                stale = text;
             }
         }
+        const serveStale = (extra = {}) => new Response(stale, { headers: { 'content-type': 'application/json; charset=utf-8', 'x-cache': 'stale', ...extra, ...cors } });
 
         if (!env.HARDCOVER_TOKEN) return json({ error: 'hardcover_token', message: 'The Worker has no Hardcover token configured.' }, 503, cors);
         let res;
@@ -103,21 +128,28 @@ export function createHandler({ fetchImpl = (...a) => fetch(...a), cache = null,
                 body: JSON.stringify({ query: op.query, variables, operationName: opName }),
             });
         } catch {
+            if (stale) return serveStale();
             return json({ error: 'hardcover_unavailable', message: 'Could not reach Hardcover.' }, 502, cors);
         }
+        // Tell the app how many requests are left so it can pace itself.
+        const rate = rateHeaders(res);
         const body = await res.json().catch(() => null);
         if (!res.ok) {
+            if (stale && (res.status === 429 || res.status >= 500)) return serveStale(rate);
             const r = hardcoverFailure(res.status, body);
-            for (const [k, v] of Object.entries(cors)) r.headers.set(k, v);
+            for (const [k, v] of Object.entries({ ...rate, ...cors })) r.headers.set(k, v);
             return r;
         }
-        if (body?.errors?.length) return json({ error: 'hardcover_query_error', message: body.errors[0]?.message || 'Query failed.' }, 502, cors);
+        if (body?.errors?.length) {
+            if (stale) return serveStale(rate);
+            return json({ error: 'hardcover_query_error', message: body.errors[0]?.message || 'Query failed.' }, 502, { ...rate, ...cors });
+        }
 
         const payload = JSON.stringify({ data: body.data });
         if (cache) {
-            await cache.put(cacheKey, new Response(payload, { headers: { 'content-type': 'application/json', 'cache-control': `max-age=${op.ttl}` } }));
+            await cache.put(cacheKey, new Response(payload, { headers: { 'content-type': 'application/json', 'cache-control': `max-age=${STALE_SECONDS}`, 'x-fetched-at': String(now()) } }));
         }
-        return new Response(payload, { headers: { 'content-type': 'application/json; charset=utf-8', 'x-cache': 'miss', ...cors } });
+        return new Response(payload, { headers: { 'content-type': 'application/json; charset=utf-8', 'x-cache': 'miss', ...rate, ...cors } });
     }
 
     async function handleCalendar(request, env, token) {

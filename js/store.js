@@ -80,7 +80,8 @@ class Store {
 
     /** Merge `patch` into a document (creates it if missing). Applied locally first. */
     async save(collection, key, patch) {
-        const next = clean(deepMerge(this[collection].get(key) || {}, patch));
+        // local copies carry their key, as backend snapshots do
+        const next = { ...clean(deepMerge(this[collection].get(key) || {}, patch)), key };
         this[collection].set(key, next);
         this.notify();
         this.persist(this.backend.write(collection, key, clean(patch)));
@@ -90,7 +91,7 @@ class Store {
     /** Replace a document entirely (used by Undo). */
     async put(collection, key, doc) {
         if (doc == null) return this.remove(collection, key);
-        this[collection].set(key, clean(doc));
+        this[collection].set(key, { ...clean(doc), key });
         this.notify();
         this.persist(this.backend.replace(collection, key, clean(doc)));
     }
@@ -104,7 +105,7 @@ class Store {
     /** ops: [{collection, key, patch}] written atomically where the backend allows. */
     async batch(ops) {
         for (const { collection, key, patch } of ops) {
-            this[collection].set(key, clean(deepMerge(this[collection].get(key) || {}, patch)));
+            this[collection].set(key, { ...clean(deepMerge(this[collection].get(key) || {}, patch)), key });
         }
         this.notify();
         this.persist(this.backend.batch(ops.map((o) => ({ ...o, patch: clean(o.patch) }))));

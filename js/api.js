@@ -1,12 +1,22 @@
 // Book data sources: Hardcover (through the Worker), Google Books and Open
-// Library. Responses are cached in memory and sessionStorage on top of the
-// Worker's own cache. Hardcover problems are tracked in `sourceStatus` so
-// the UI can explain why results are limited instead of showing nothing.
-
+// Library.
+//
+// Hardcover allows a burst of 10 requests refilling at 1 per second, so:
+//  - responses are cached in memory and in IndexedDB (survives restarts),
+//    and a stale copy is used when Hardcover is busy or unreachable;
+//  - every Hardcover call goes through a token bucket that mirrors the real
+//    limit (synced from the Worker's x-hc-remaining header); background work
+//    keeps a reserve free for what you're doing right now;
+//  - search costs one request (authors and series are derived from book hits);
+//  - when Hardcover can't be asked, search quietly relies on your library,
+//    Google Books and Open Library, and only says so if it lasts > 2 minutes.
 import { workerUrl, googleBooksKey } from '../config.js';
 import { fromHardcoverHit, fromHardcoverBook, fromGoogleVolume, fromOpenLibraryEdition, fromOpenLibrarySearchDoc, authorFromHardcover } from './lib/normalize.js';
 import { mergeBook, sameBook } from './lib/merge.js';
 import { toIsbn13, isbn13to10 } from './lib/isbn.js';
+import { createLimiter } from './lib/rateLimiter.js';
+import { deriveAuthorsAndSeries } from './lib/search.js';
+import { persistentCache } from './cache.js';
 
 let getIdToken = async () => null;
 export function setIdTokenProvider(fn) { getIdToken = fn; }
@@ -26,36 +36,75 @@ export class SourceError extends Error {
 }
 
 // ─── Caching ────────────────────────────────────────────────────────
+const MIN = 60000;
+const DAY = 24 * 60 * MIN;
+const KEEP_STALE = 7 * DAY;
 const memory = new Map();
-function cached(key, ttlMs, loader) {
+const inflight = new Map();
+const STALE_OK = new Set(['local_limited', 'rate_limited', 'network', 'hardcover_unavailable', 'sign_in_required']);
+
+/**
+ * Fresh value from memory or IndexedDB, else `loader()`. If the loader fails
+ * for a temporary reason (rate limit, offline), a stale copy is returned.
+ */
+async function cached(key, ttlMs, loader) {
     const now = Date.now();
     const m = memory.get(key);
-    if (m && m.until > now) return Promise.resolve(m.value);
-    try {
-        const s = JSON.parse(sessionStorage.getItem(`bt:${key}`) || 'null');
-        if (s && s.until > now) { memory.set(key, s); return Promise.resolve(s.value); }
-    } catch { /* storage blocked */ }
-    const p = loader().then((value) => {
-        const entry = { value, until: now + ttlMs };
-        memory.set(key, entry);
-        try { sessionStorage.setItem(`bt:${key}`, JSON.stringify(entry)); } catch { /* quota */ }
-        return value;
-    });
-    memory.set(key, { value: p, until: now + ttlMs });
-    p.catch(() => memory.delete(key));
+    if (m && m.freshUntil > now) return m.value;
+    if (inflight.has(key)) return inflight.get(key);
+    const p = (async () => {
+        const stored = m || await persistentCache.get(key);
+        if (stored && stored.freshUntil > Date.now()) { memory.set(key, stored); return stored.value; }
+        try {
+            const value = await loader();
+            const entry = { value, freshUntil: Date.now() + ttlMs, keepUntil: Date.now() + Math.max(ttlMs, KEEP_STALE) };
+            memory.set(key, entry);
+            persistentCache.set(key, entry);
+            return value;
+        } catch (e) {
+            if (stored && stored.keepUntil > Date.now() && STALE_OK.has(e.code)) return stored.value;
+            throw e;
+        }
+    })();
+    inflight.set(key, p);
+    p.finally(() => inflight.delete(key)).catch(() => {});
     return p;
 }
 
-const MIN = 60000;
+export function pruneCache() { return persistentCache.prune(); }
 
 // ─── Hardcover via the Worker ───────────────────────────────────────
 export const hardcoverAvailable = () => !!workerUrl && sourceStatus.hardcover !== 'unconfigured';
 
-async function hc(op, variables, ttlMs = 30 * MIN) {
+export const limiter = createLimiter({ capacity: 10, refillPerSecond: 1 });
+let limitedSince = null;
+const LIMITED_NOTICE_AFTER = 2 * MIN;
+
+/** Quietly note a rate limit; only tell the reader if it lasts a while. */
+function noteLimited(message) {
+    limitedSince ??= Date.now();
+    if (Date.now() - limitedSince > LIMITED_NOTICE_AFTER) setHardcoverStatus('limited', message);
+}
+
+/** Wait for a token. Interactive calls wait briefly; background calls queue. */
+async function acquire(priority) {
+    if (limiter.tryTake(priority)) return;
+    const maxWait = priority === 'background' ? 2 * MIN : 1500;
+    const deadline = Date.now() + maxWait;
+    while (Date.now() < deadline) {
+        await sleep(Math.min(Math.max(limiter.waitMs(priority), 200), deadline - Date.now()));
+        if (limiter.tryTake(priority)) return;
+    }
+    noteLimited('Book data limit reached for the moment.');
+    throw new SourceError('local_limited');
+}
+
+async function hc(op, variables, ttlMs = 30 * MIN, { priority = 'interactive' } = {}) {
     if (!workerUrl) throw new SourceError('hardcover_unconfigured');
     return cached(`hc:${op}:${JSON.stringify(variables)}`, ttlMs, async () => {
         const token = await getIdToken();
         if (!token) throw new SourceError('sign_in_required');
+        await acquire(priority);
         let res;
         try {
             res = await fetch(`${workerUrl.replace(/\/$/, '')}/q/${op}`, {
@@ -67,16 +116,24 @@ async function hc(op, variables, ttlMs = 30 * MIN) {
             setHardcoverStatus(navigator.onLine === false ? 'offline' : 'down', 'Could not reach the book data service.');
             throw new SourceError('network');
         }
+        // keep our bucket in step with Hardcover's own count
+        const remaining = Number(res.headers.get('x-hc-remaining'));
+        if (res.headers.has('x-hc-remaining') && Number.isFinite(remaining)) limiter.sync(remaining, Number(res.headers.get('x-hc-reset')) || 0);
         const body = await res.json().catch(() => ({}));
         if (!res.ok) {
             const why = [body.message, body.detail && `Hardcover said: ${body.detail}`].filter(Boolean).join(' ');
+            if (res.status === 429) {
+                limiter.block(Number(res.headers.get('retry-after')) || 30);
+                noteLimited(body.message);
+                throw new SourceError('rate_limited', body.message);
+            }
             if (body.error === 'hardcover_token') setHardcoverStatus('token', why);
             else if (body.error === 'hardcover_forbidden') setHardcoverStatus('down', why);
-            else if (res.status === 429) setHardcoverStatus('limited', body.message);
             else if (res.status === 401 || res.status === 403) setHardcoverStatus('signin', body.error);
             else setHardcoverStatus('down', body.message || `Error ${res.status}`);
             throw new SourceError(body.error || `http_${res.status}`, body.message);
         }
+        limitedSince = null;
         setHardcoverStatus('ok');
         return body.data;
     });
@@ -125,21 +182,21 @@ async function gbFetch(path, params) {
 }
 
 export function googleSearch(q, n = 12) {
-    return cached(`gb:q:${q}:${n}`, 60 * MIN, async () => {
+    return cached(`gb:q:${q}:${n}`, DAY, async () => {
         const data = await gbFetch('volumes', { q, maxResults: String(n), printType: 'books', orderBy: 'relevance' });
         return (data.items || []).map(fromGoogleVolume).filter((b) => b?.title);
     });
 }
 
 export function googleByIsbn(isbn) {
-    return cached(`gb:isbn:${isbn}`, 24 * 60 * MIN, async () => {
+    return cached(`gb:isbn:${isbn}`, 30 * DAY, async () => {
         const data = await gbFetch('volumes', { q: `isbn:${isbn}`, maxResults: '1' });
         return data.items?.[0] ? fromGoogleVolume(data.items[0]) : null;
     });
 }
 
 export function googleVolume(id) {
-    return cached(`gb:vol:${id}`, 24 * 60 * MIN, async () => {
+    return cached(`gb:vol:${id}`, 7 * DAY, async () => {
         const res = await fetch(`https://www.googleapis.com/books/v1/volumes/${encodeURIComponent(id)}${googleBooksKey ? `?key=${googleBooksKey}` : ''}`);
         if (!res.ok) throw new SourceError(`google_${res.status}`);
         return fromGoogleVolume(await res.json());
@@ -149,7 +206,7 @@ export function googleVolume(id) {
 const OL_FIELDS = 'key,title,subtitle,author_name,first_publish_year,cover_i,isbn,number_of_pages_median,series_name,series_position,ratings_count';
 
 export function openLibrarySearch(q, n = 12) {
-    return cached(`ol:q:${q}:${n}`, 60 * MIN, async () => {
+    return cached(`ol:q:${q}:${n}`, DAY, async () => {
         const res = await fetch(`https://openlibrary.org/search.json?${new URLSearchParams({ q, limit: String(n), fields: OL_FIELDS })}`);
         if (!res.ok) throw new SourceError(`openlibrary_${res.status}`);
         return ((await res.json()).docs || []).map(fromOpenLibrarySearchDoc).filter(Boolean);
@@ -157,7 +214,7 @@ export function openLibrarySearch(q, n = 12) {
 }
 
 export function openLibraryByIsbn(isbn) {
-    return cached(`ol:isbn:${isbn}`, 24 * 60 * MIN, async () => {
+    return cached(`ol:isbn:${isbn}`, 30 * DAY, async () => {
         const res = await fetch(`https://openlibrary.org/isbn/${isbn}.json`);
         if (res.status === 404) return null;
         if (!res.ok) throw new SourceError(`openlibrary_${res.status}`);
@@ -186,15 +243,27 @@ const settle = (p) => p.then((v) => v, () => null);
  * Search everything. `onPartial` receives results as each source answers, so
  * the UI can show library and Google results before Hardcover returns.
  */
-export async function searchAll(q, { onPartial } = {}) {
+export async function searchAll(q, { onPartial, include = {} } = {}) {
     const result = { books: [], authors: [], series: [], hardcover: hardcoverAvailable() ? 'pending' : 'unavailable', google: 'pending' };
     const emit = () => onPartial?.({ ...result });
     const tasks = [];
     if (hardcoverAvailable()) {
-        tasks.push(Promise.allSettled([hc('searchBooks', { q, n: 20 }), hc('searchAuthors', { q, n: 6 }), hc('searchSeries', { q, n: 6 })]).then(([b, a, s]) => {
-            if (b.status === 'fulfilled') result.books.push(...hits(b.value).map(fromHardcoverHit).filter(Boolean).map((x) => ({ ...x, key: `hc_${x.hardcoverId}`, verified: true })));
-            if (a.status === 'fulfilled') result.authors.push(...hits(a.value).map((d) => ({ hardcoverId: Number(d.id), name: d.name, alternateNames: d.alternate_names || [], booksCount: d.books_count, seriesNames: d.series_names || [], topBooks: d.books || [], imageUrl: d.image?.url || null })));
-            if (s.status === 'fulfilled') result.series.push(...hits(s.value).map((d) => ({ id: Number(d.id), name: d.name, authorName: d.author_name || d.author?.name || null, authorId: d.author?.id ?? null, booksCount: d.primary_books_count || d.books_count, readersCount: d.readers_count, topBooks: d.books || [] })));
+        // One request: author and series cards come from the book hits. The
+        // dedicated author/series searches run only for the Authors/Series chips.
+        const calls = [hc('searchBooks', { q, n: 20 }, DAY)];
+        if (include.authors) calls.push(hc('searchAuthors', { q, n: 8 }, DAY));
+        if (include.series) calls.push(hc('searchSeries', { q, n: 8 }, DAY));
+        tasks.push(Promise.allSettled(calls).then(([b, ...more]) => {
+            if (b.status === 'fulfilled') {
+                const books = hits(b.value).map(fromHardcoverHit).filter(Boolean).map((x) => ({ ...x, key: `hc_${x.hardcoverId}`, verified: true }));
+                result.books.push(...books);
+                const derived = deriveAuthorsAndSeries(books);
+                result.authors.push(...derived.authors);
+                result.series.push(...derived.series);
+            }
+            const [a, s] = [include.authors ? more.shift() : null, include.series ? more.shift() : null];
+            if (a?.status === 'fulfilled') mergeCards(result.authors, hits(a.value).map((d) => ({ hardcoverId: Number(d.id), name: d.name, alternateNames: d.alternate_names || [], booksCount: d.books_count, seriesNames: d.series_names || [], topBooks: d.books || [], imageUrl: d.image?.url || null })), (x) => x.hardcoverId);
+            if (s?.status === 'fulfilled') mergeCards(result.series, hits(s.value).map((d) => ({ id: Number(d.id), name: d.name, authorName: d.author_name || d.author?.name || null, authorId: d.author?.id ?? null, booksCount: d.primary_books_count || d.books_count, readersCount: d.readers_count, topBooks: d.books || [] })), (x) => x.id);
             result.hardcover = b.status === 'fulfilled' ? 'ok' : 'error';
             emit();
         }));
@@ -218,11 +287,19 @@ export async function searchAll(q, { onPartial } = {}) {
     return result;
 }
 
+/** Add search cards, replacing derived ones that have the same id with the richer version. */
+function mergeCards(list, extra, idOf) {
+    for (const x of extra) {
+        const i = list.findIndex((y) => idOf(y) && idOf(y) === idOf(x));
+        if (i === -1) list.push(x); else list[i] = { ...list[i], ...x };
+    }
+}
+
 /** Full details for one book, merged across sources. */
 export async function bookDetails(key, known = null) {
     if (key.startsWith('hc_') && hardcoverAvailable()) {
         try {
-            const data = await hc('bookById', { id: Number(key.slice(3)) }, 6 * 60 * MIN);
+            const data = await hc('bookById', { id: Number(key.slice(3)) }, 7 * DAY);
             const hcBook = fromHardcoverBook(data?.books?.[0]);
             if (hcBook) {
                 const isbn = hcBook.isbn13 || known?.isbn13;
@@ -254,7 +331,7 @@ export async function lookupIsbn(raw) {
     let hcBook = null;
     if (hardcoverAvailable()) {
         try {
-            const data = await hc('editionByIsbn', { isbn13: isbn, isbn10: isbn13to10(isbn) || '0000000000' }, 24 * 60 * MIN);
+            const data = await hc('editionByIsbn', { isbn13: isbn, isbn10: isbn13to10(isbn) || '0000000000' }, 30 * DAY);
             const ed = data?.editions?.[0];
             if (ed?.book) hcBook = { ...fromHardcoverBook(ed.book), isbn13: isbn, pageCount: ed.pages || ed.book.pages || null };
         } catch { /* offline or Hardcover down: try the others */ }
@@ -267,7 +344,7 @@ export async function lookupIsbn(raw) {
 }
 
 export async function authorDetails(hardcoverId) {
-    const data = await hc('authorById', { id: hardcoverId }, 6 * 60 * MIN);
+    const data = await hc('authorById', { id: hardcoverId }, 3 * DAY);
     const a = data?.authors?.[0];
     if (!a) return null;
     const books = [];
@@ -282,18 +359,18 @@ export async function authorDetails(hardcoverId) {
 
 export async function findAuthorByName(name) {
     if (!hardcoverAvailable()) return null;
-    const data = await hc('searchAuthors', { q: name, n: 3 });
+    const data = await hc('searchAuthors', { q: name, n: 3 }, 7 * DAY);
     const doc = hits(data)[0];
     return doc ? Number(doc.id) : null;
 }
 
-export async function upcomingForAuthors(ids, since, year) {
-    const data = await hc('authorBooks', { ids, since, year }, 6 * 60 * MIN);
+export async function upcomingForAuthors(ids, since, year, { priority = 'background' } = {}) {
+    const data = await hc('authorBooks', { ids, since, year }, 12 * 60 * MIN, { priority });
     return (data?.books || []).map(fromHardcoverBook).filter(Boolean).map((b) => ({ ...b, key: `hc_${b.hardcoverId}`, verified: true }));
 }
 
-export async function seriesBooks(ids) {
-    const data = await hc('seriesBooks', { ids }, 6 * 60 * MIN);
+export async function seriesBooks(ids, { priority = 'interactive' } = {}) {
+    const data = await hc('seriesBooks', { ids }, DAY, { priority });
     return (data?.series || []).map((s) => ({
         id: s.id, name: s.name, total: s.primary_books_count || s.books_count, completed: s.is_completed, author: s.author,
         books: (s.book_series || []).map((bs) => {
@@ -303,8 +380,8 @@ export async function seriesBooks(ids) {
     }));
 }
 
-export async function booksByIds(ids) {
+export async function booksByIds(ids, { priority = 'background' } = {}) {
     if (!ids.length || !hardcoverAvailable()) return [];
-    const data = await hc('booksByIds', { ids: ids.slice(0, 30) }, 6 * 60 * MIN);
+    const data = await hc('booksByIds', { ids: ids.slice(0, 30) }, DAY, { priority });
     return (data?.books || []).map(fromHardcoverBook).filter(Boolean).map((b) => ({ ...b, key: `hc_${b.hardcoverId}`, verified: true }));
 }
