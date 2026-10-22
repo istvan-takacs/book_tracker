@@ -43,3 +43,5 @@ A vanilla JS PWA (ES modules loaded straight from the browser, no bundler) plus 
 - Colours are CSS tokens in `style.css` (light, dark, or forced via `[data-theme]`).
 - Hardcover's schema is in beta. Field assumptions are listed in `docs/hardcover-fields.md`. Update that file when you verify or change a query.
 - When adding shell files, list them in `SHELL_FILES` in `sw.js` and bump `VERSION`.
+- When adding or removing a module that `js/app.js` imports, even indirectly, update the `modulepreload` links in `index.html` (`tests/preload.test.js` fails otherwise). Without them the browser finds modules one import level at a time, which cost 9 round trips at start-up. Keep the preloaded Firebase SDK version in step with `js/firebase.js`.
+- Don't pass `popupRedirectResolver` to `initializeAuth`. On iOS and mobile it makes every launch wait for an iframe from `authDomain`. Pass it to the sign-in calls instead (`js/firebase.js`).

@@ -16,8 +16,57 @@
     <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&family=Hanken+Grotesk:wght@400;500;600;700;800&display=swap">
+    <!-- loaded without blocking start-up; text shows in the fallback font until it arrives -->
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&family=Hanken+Grotesk:wght@400;500;600;700;800&display=swap" media="print" onload="this.media='all'">
     <link rel="stylesheet" href="style.css">
+    <!-- Fetch every module at once instead of one import level at a time.
+         tests/preload.test.js checks this list against the imports in js/app.js. -->
+    <link rel="modulepreload" href="js/app.js">
+    <link rel="modulepreload" href="config.js">
+    <link rel="modulepreload" href="js/store.js">
+    <link rel="modulepreload" href="js/services.js">
+    <link rel="modulepreload" href="js/api.js">
+    <link rel="modulepreload" href="js/lib/normalize.js">
+    <link rel="modulepreload" href="js/lib/dates.js">
+    <link rel="modulepreload" href="js/lib/isbn.js">
+    <link rel="modulepreload" href="js/lib/merge.js">
+    <link rel="modulepreload" href="js/lib/text.js">
+    <link rel="modulepreload" href="js/lib/rateLimiter.js">
+    <link rel="modulepreload" href="js/lib/search.js">
+    <link rel="modulepreload" href="js/cache.js">
+    <link rel="modulepreload" href="js/releases.js">
+    <link rel="modulepreload" href="js/actions.js">
+    <link rel="modulepreload" href="js/ui.js">
+    <link rel="modulepreload" href="js/lib/follow.js">
+    <link rel="modulepreload" href="js/lib/goodreads.js">
+    <link rel="modulepreload" href="js/lib/stats.js">
+    <link rel="modulepreload" href="js/views/home.js">
+    <link rel="modulepreload" href="js/components.js">
+    <link rel="modulepreload" href="js/lib/calendar.js">
+    <link rel="modulepreload" href="js/sheets/progress.js">
+    <link rel="modulepreload" href="js/lib/progress.js">
+    <link rel="modulepreload" href="js/sheets/rate.js">
+    <link rel="modulepreload" href="js/lib/moods.js">
+    <link rel="modulepreload" href="js/views/library.js">
+    <link rel="modulepreload" href="js/views/search.js">
+    <link rel="modulepreload" href="js/sheets/releaseDate.js">
+    <link rel="modulepreload" href="js/views/scan.js">
+    <link rel="modulepreload" href="js/scanner.js">
+    <link rel="modulepreload" href="js/views/upcoming.js">
+    <link rel="modulepreload" href="js/views/stats.js">
+    <link rel="modulepreload" href="js/views/settings.js">
+    <link rel="modulepreload" href="js/sample.js">
+    <link rel="modulepreload" href="js/views/onboarding.js">
+    <link rel="modulepreload" href="js/views/book.js">
+    <link rel="modulepreload" href="js/views/author.js">
+    <link rel="modulepreload" href="js/views/series.js">
+    <link rel="modulepreload" href="js/sheets/seriesRead.js">
+    <link rel="modulepreload" href="js/keyboard.js">
+    <link rel="modulepreload" href="js/firebase.js">
+    <!-- Firebase SDK (version must match js/firebase.js) -->
+    <link rel="modulepreload" href="https://www.gstatic.com/firebasejs/12.10.0/firebase-app.js">
+    <link rel="modulepreload" href="https://www.gstatic.com/firebasejs/12.10.0/firebase-auth.js">
+    <link rel="modulepreload" href="https://www.gstatic.com/firebasejs/12.10.0/firebase-firestore.js">
 </head>
 <body>
     <a class="skip-link" href="#view">Skip to content</a>
