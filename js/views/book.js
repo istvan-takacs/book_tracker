@@ -1,6 +1,6 @@
 import { html, icon, cover, authorLinks, seriesLabel, plural, fmtNumber, raw, safeUrl } from '../ui.js';
 import { store } from '../store.js';
-import { bookDetails, booksByIds, seriesBooks, hardcoverAvailable } from '../api.js';
+import { bookDetails, booksByIds, seriesBooks, hardcoverAvailable, seenBook } from '../api.js';
 import { shelfPicker, releaseInfo, calendarLink, communityRating, bookHref } from '../components.js';
 import { setShelf, removeBook, startReread, metaOf, clearReleaseOverride } from '../actions.js';
 import { openProgressSheet } from '../sheets/progress.js';
@@ -22,7 +22,8 @@ function currentBook(key) {
     const lib = store.get('books', key);
     const d = details.get(key);
     if (lib && d) return { ...d, ...lib, coverUrl: lib.coverUrl || d.coverUrl, description: lib.description || d.description, editions: d.editions || lib.editions, communityMoods: d.communityMoods?.length ? d.communityMoods : lib.communityMoods, contentWarnings: d.contentWarnings || lib.contentWarnings, narrator: d.narrator || lib.narrator, publisher: d.publisher || lib.publisher, similarIds: d.similarIds || lib.similarIds, communityRating: d.rating ?? lib.communityRating, ratingsCount: d.ratingsCount ?? lib.ratingsCount };
-    return lib || d || null;
+    // a search or list card shows the basics while the details load
+    return lib || d || seenBook(key);
 }
 
 const REFRESH_AFTER = 7 * 24 * 60 * 60 * 1000;
@@ -34,9 +35,11 @@ async function load(key, rerender) {
     // when they are a week old (saves requests on every reopen).
     const fetchedAt = Date.parse(lib?.metaFetchedAt || '') || 0;
     const fresh = lib && lib.title && Date.now() - fetchedAt < REFRESH_AFTER;
+    // series and similar books start from what we already know, alongside the details
+    const early = loadExtras(key, rerender);
     if (!fresh) {
         try {
-            const detail = await bookDetails(key, known);
+            const detail = await bookDetails(key, known, { onPartial: (d) => { details.set(key, d); rerender(); } });
             if (detail) {
                 details.set(key, detail);
                 // keep the library copy's metadata current without touching your data
@@ -55,19 +58,26 @@ async function load(key, rerender) {
         } catch (e) { console.warn('[book] details', e); }
         rerender();
     }
+    await early;
+    // details can reveal a series or similar books the card didn't have
+    await loadExtras(key, rerender);
+}
+
+function loadExtras(key, rerender) {
     const b = currentBook(key);
-    if (!b || !hardcoverAvailable()) return;
-    const ex = extras.get(key) || {};
+    if (!b || !hardcoverAvailable()) return Promise.resolve();
+    if (!extras.has(key)) extras.set(key, {});
+    const ex = extras.get(key);
+    const tasks = [];
     if (b.series?.id && !ex.series) {
-        try { const [s] = await seriesBooks([b.series.id]); ex.series = s || null; } catch { /* optional section */ }
+        tasks.push(seriesBooks([b.series.id]).then(([s]) => { ex.series = s || null; rerender(); }, () => { /* optional section */ }));
     }
     // "More like this" is nice-to-have: background priority, so it never
     // competes with what you're doing for Hardcover requests
     if (b.similarIds?.length && !ex.similar) {
-        try { ex.similar = await booksByIds(b.similarIds.slice(0, 12)); } catch { /* optional section */ }
+        tasks.push(booksByIds(b.similarIds.slice(0, 12)).then((list) => { ex.similar = list; rerender(); }, () => { /* optional section */ }));
     }
-    extras.set(key, ex);
-    rerender();
+    return Promise.all(tasks);
 }
 
 function similarReason(book, me) {

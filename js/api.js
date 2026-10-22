@@ -237,6 +237,15 @@ export function openLibraryByIsbn(isbn) {
 
 const settle = (p) => p.then((v) => v, () => null);
 
+// Books seen in search results and lists this session, so a book page can
+// show the basics straight away while its full details load.
+const seen = new Map();
+function remember(books) {
+    for (const b of books) if (b?.key) seen.set(b.key, b);
+    return books;
+}
+export const seenBook = (key) => seen.get(key) || null;
+
 // ─── High-level lookups ─────────────────────────────────────────────
 
 /**
@@ -245,7 +254,7 @@ const settle = (p) => p.then((v) => v, () => null);
  */
 export async function searchAll(q, { onPartial, include = {} } = {}) {
     const result = { books: [], authors: [], series: [], hardcover: hardcoverAvailable() ? 'pending' : 'unavailable', google: 'pending' };
-    const emit = () => onPartial?.({ ...result });
+    const emit = () => { remember(result.books); onPartial?.({ ...result }); };
     const tasks = [];
     if (hardcoverAvailable()) {
         // One request: author and series cards come from the book hits. The
@@ -295,14 +304,19 @@ function mergeCards(list, extra, idOf) {
     }
 }
 
-/** Full details for one book, merged across sources. */
-export async function bookDetails(key, known = null) {
+/**
+ * Full details for one book, merged across sources. `onPartial` receives the
+ * Hardcover version as soon as it arrives, before Google Books and Open
+ * Library fill the gaps.
+ */
+export async function bookDetails(key, known = null, { onPartial } = {}) {
     if (key.startsWith('hc_') && hardcoverAvailable()) {
         try {
             const data = await hc('bookById', { id: Number(key.slice(3)) }, 7 * DAY);
             const hcBook = fromHardcoverBook(data?.books?.[0]);
             if (hcBook) {
                 const isbn = hcBook.isbn13 || known?.isbn13;
+                if (isbn) onPartial?.(mergeBook({ hc: hcBook }));
                 const [gb, ol] = isbn ? await Promise.all([settle(googleByIsbn(isbn)), (!hcBook.coverUrl ? settle(openLibraryByIsbn(isbn)) : null)]) : [null, null];
                 return mergeBook({ hc: hcBook, gb, ol });
             }
@@ -354,6 +368,7 @@ export async function authorDetails(hardcoverId) {
         const b = fromHardcoverBook(c.book);
         if (b && !b.compilation && !books.some((x) => x.hardcoverId === b.hardcoverId)) books.push({ ...b, key: `hc_${b.hardcoverId}`, verified: true });
     }
+    remember(books);
     return { ...authorFromHardcover(a), books };
 }
 
@@ -366,22 +381,24 @@ export async function findAuthorByName(name) {
 
 export async function upcomingForAuthors(ids, since, year, { priority = 'background' } = {}) {
     const data = await hc('authorBooks', { ids, since, year }, 12 * 60 * MIN, { priority });
-    return (data?.books || []).map(fromHardcoverBook).filter(Boolean).map((b) => ({ ...b, key: `hc_${b.hardcoverId}`, verified: true }));
+    return remember((data?.books || []).map(fromHardcoverBook).filter(Boolean).map((b) => ({ ...b, key: `hc_${b.hardcoverId}`, verified: true })));
 }
 
 export async function seriesBooks(ids, { priority = 'interactive' } = {}) {
     const data = await hc('seriesBooks', { ids }, DAY, { priority });
-    return (data?.series || []).map((s) => ({
+    const list = (data?.series || []).map((s) => ({
         id: s.id, name: s.name, total: s.primary_books_count || s.books_count, completed: s.is_completed, author: s.author,
         books: (s.book_series || []).map((bs) => {
             const b = fromHardcoverBook(bs.book);
             return b && { ...b, key: `hc_${b.hardcoverId}`, verified: true, series: { id: s.id, name: s.name, position: bs.position } };
         }).filter(Boolean),
     }));
+    for (const s of list) remember(s.books);
+    return list;
 }
 
 export async function booksByIds(ids, { priority = 'background' } = {}) {
     if (!ids.length || !hardcoverAvailable()) return [];
     const data = await hc('booksByIds', { ids: ids.slice(0, 30) }, DAY, { priority });
-    return (data?.books || []).map(fromHardcoverBook).filter(Boolean).map((b) => ({ ...b, key: `hc_${b.hardcoverId}`, verified: true }));
+    return remember((data?.books || []).map(fromHardcoverBook).filter(Boolean).map((b) => ({ ...b, key: `hc_${b.hardcoverId}`, verified: true })));
 }
